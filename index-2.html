@@ -173,22 +173,27 @@
 
   <footer class="muted center">© avus gastro — Browser-Version (Demo)</footer>
 
-  <script>
-    window.CONFIG = {
-      sheetId: "1nF2tct6AFramkHv3WcNUGpu8kW_5FqQpNV2IGUgecSY",
-      tabs: {
-        contacts: "Contacts",
-        stats: "Stats",
-        inboxHot: "InboxHot",
-        inboxNeedReview: "InboxNeedReview",
-        inboxReply: "InboxReply",
-        todos: "Todos",
-        templates: "Templates",
-        blacklist: "Blacklist",
-        bounces: "Bounces"
-      }
-    };
-  </script>
+ <script>
+  window.CONFIG = {
+    sheetId: "1nF2tct6AFramkHv3WcNUGpu8kW_5FqQpNV2IGUgecSY",
+    tabs: {
+      // Datenquellen
+      contacts: "campaign_leads",   // Kontaktliste unten + Deaktivieren-Toggle
+      todos: "campaign_leads",      // To-Dos (aus bereits Angeschriebenen)
+      templates: "templates",       // Vorlagen (Anschreiben + Follow-ups)
+      blacklist: "blacklist",
+      bounces: "bounce",
+      settings: "settings",
+
+      // Posteingang: wenn du (noch) keine separaten Inbox-Tabs führst,
+      // nutze erstmal Platzhalter oder gleiche "campaign_leads" – siehe Fragen unten.
+      inboxHot: "campaign_leads",
+      inboxNeedReview: "campaign_leads",
+      inboxReply: "campaign_leads"
+    }
+  };
+</script>
+
   <script src="app.js"></script>
 </body>
 </html>
