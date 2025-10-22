@@ -22,6 +22,7 @@
 .row{display:flex;align-items:center}
 .between{justify-content:space-between}
 .end{justify-content:flex-end}
+.grow{flex:1}
 .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:12px}
 .card.narrow{max-width:380px;margin:48px auto}
 .kpi{display:flex;flex-direction:column;align-items:center;justify-content:center;height:86px}
