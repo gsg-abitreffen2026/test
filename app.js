@@ -25,21 +25,17 @@ async function httpGet(url) {
   if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
   return res.json();
 }
--async function httpPost(url, body) {
--  const res = await fetch(url, {
--    method: 'POST',
--    headers: { 'Content-Type': 'application/json' },
--    body: JSON.stringify(body || {}),
--  });
-+async function httpPost(url, body) {
-+  const res = await fetch(url, {
-+    method: 'POST',
-+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // <-- vermeidet Preflight
-+    body: JSON.stringify(body || {}),
-+  });
-   if (!res.ok) throw new Error(`POST ${url} -> ${res.status}`);
-   return res.json();
+async function httpPost(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    // Wichtig für Apps Script + CORS: "simple request", damit KEIN Preflight (OPTIONS) gesendet wird
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify(body || {}),
+  });
+  if (!res.ok) throw new Error(`POST ${url} -> ${res.status}`);
+  return res.json();
 }
+
 
 
 function cn(...xs){ return xs.filter(Boolean).join(' '); }
