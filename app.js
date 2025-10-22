@@ -42,6 +42,131 @@ function cn(...xs){ return xs.filter(Boolean).join(' '); }
 function isEmail(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x); }
 function asBoolTF(v){ return String(v).toUpperCase() === 'TRUE'; }
 function toTF(v){ return v ? 'TRUE' : 'FALSE'; }
+// ---------- PDF -> Kontakte (Firma, Anrede, firstName, lastName, phone, email) ----------
+async function parsePDF(file) {
+  const arrayBuf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+
+  // Hilfsfunktion: Texte einer Seite in Zeilen gruppieren (nach Y), innerhalb der Zeile nach X sortieren
+  async function pageToLines(page) {
+    const tc = await page.getTextContent();
+    const items = tc.items.map(it => {
+      const [a, b, c, d, e, f] = it.transform; // transform matrix
+      return { x: e, y: f, str: it.str };
+    });
+    // nach y absteigend (pdf.js-Koords), dann x aufsteigend
+    items.sort((p,q) => (q.y - p.y) || (p.x - q.x));
+
+    // Zeilen bilden (Toleranz für gleiche y)
+    const lines = [];
+    const EPS = 2.5;
+    for (const t of items) {
+      const L = lines.find(l => Math.abs(l.y - t.y) < EPS);
+      if (L) L.items.push(t);
+      else lines.push({ y: t.y, items: [t] });
+    }
+    // innerhalb der Zeile nach x sortieren & zu einem String zusammenbauen + auch Spaltenpositionen behalten
+    return lines.map(L => {
+      L.items.sort((p,q) => p.x - q.x);
+      return { y: L.y, items: L.items, text: L.items.map(i => i.str).join(' ') };
+    });
+  }
+
+  // Spalten anhand der Kopfzeile erkennen (Firma | Anrede | Vorname | Nachname | Telefon | Anspr. E-Mail)
+  function detectColumns(headerLine) {
+    // Positionen der ersten Tokens in der Kopfzeile suchen
+    function findX(label) {
+      const token = headerLine.items.find(i => headerLine.text.toLowerCase().includes(label));
+      // fallback: harte Werte, wenn nicht gefunden
+      return token ? token.x : null;
+    }
+    // Wir scannen die Items und merken uns die x-Startwerte der Schlüsselwörter
+    const map = {};
+    for (const it of headerLine.items) {
+      const s = it.str.toLowerCase();
+      if (!map.firma && s.includes('firma')) map.firma = it.x;
+      if (!map.anrede && s.includes('anrede')) map.anrede = it.x;
+      if (!map.vorname && s.includes('vorname')) map.vorname = it.x;
+      if (!map.nachname && s.includes('nachname')) map.nachname = it.x;
+      if (!map.telefon && s.includes('telefon')) map.telefon = it.x;
+      if (!map.email && (s.includes('e-mail') || s.includes('email') || s.includes('anspr.'))) map.email = it.x;
+    }
+    // Fallback-Spalten, falls der Kopf nicht sauber erkannt wird (ca.-Werte für dein PDF)
+    return {
+      firma:  map.firma  ??  30,
+      anrede: map.anrede ?? 170,
+      vor:    map.vorname?? 230,
+      nach:   map.nachname?? 310,
+      tel:    map.telefon?? 430,
+      mail:   map.email  ?? 520
+    };
+  }
+
+  function sliceByColumns(line, cols) {
+    // Items anhand der x-Positionen in Spalten einsortieren
+    const buckets = { firma:[], anrede:[], vor:[], nach:[], tel:[], mail:[] };
+    for (const it of line.items) {
+      const x = it.x;
+      const key =
+        x < cols.anrede ? 'firma' :
+        x < cols.vor    ? 'anrede' :
+        x < cols.nach   ? 'vor' :
+        x < cols.tel    ? 'nach' :
+        x < cols.mail   ? 'tel' : 'mail';
+      buckets[key].push(it.str);
+    }
+    const join = arr => arr.join(' ').replace(/\s+/g,' ').trim();
+    return {
+      company:  join(buckets.firma),
+      Anrede:   join(buckets.anrede),
+      first:    join(buckets.vor),
+      last:     join(buckets.nach),
+      phone:    join(buckets.tel),
+      email:    join(buckets.mail)
+    };
+  }
+
+  const out = [];
+  for (let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const lines = await pageToLines(page);
+
+    // Kopfzeile und Spaltenbreiten je Seite bestimmen (erste Zeile, die alle Schlüsselwörter enthält)
+    const header = lines.find(L => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
+    const cols = header ? detectColumns(header) : detectColumns(lines[0] || {items:[]});
+
+    // Relevante Zeilen: solche, die mindestens Firma und irgendwas rechts davon haben
+    for (const L of lines) {
+      if (header && Math.abs(L.y - header.y) < 3) continue; // Kopfzeile überspringen
+      const rec = sliceByColumns(L, cols);
+
+      // Validierung: mindestens E-Mail ODER (Firma + Nachname)
+      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
+      const minimal  = rec.company && rec.last;
+      if (hasEmail || minimal) {
+        out.push({
+          email: hasEmail ? rec.email : '',
+          firstName: rec.first,
+          lastName: rec.last,
+          company: rec.company,
+          position: '',            // aus PDF nicht vorhanden
+          phone: rec.phone || '',
+          mobile: ''
+        });
+      }
+    }
+  }
+  // Deduplizieren nach E-Mail (falls vorhanden) sonst (Firma+Nachname)
+  const seen = new Set();
+  const rows = [];
+  for (const r of out) {
+    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${r.company.toLowerCase()}|${r.last.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(r);
+  }
+  return rows;
+}
 
 // CSV parsing (supports ; , \t, quotes, german headers)
 function detectDelimiter(headerLine) {
