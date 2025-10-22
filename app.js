@@ -1,9 +1,10 @@
-// Email‑Akquise Dashboard (GH Pages build — React + Babel, no bundler)
+// Email-Akquise Dashboard (GH Pages build — React + Babel, no bundler)
 const { useState, useEffect, useCallback, useMemo } = React;
 
-// ---- API config ----
+// ===================== API CONFIG =====================
 const API_BASE = 'https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec';
 const API = {
+  // READ
   contacts: (limit) => `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}`,
   stats: () => `${API_BASE}?path=api/stats`,
   inbox: () => `${API_BASE}?path=api/review-inbox`,
@@ -20,6 +21,7 @@ const API = {
   stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
 };
 
+// Simple GET/POST helpers. POST uses text/plain to avoid CORS preflight on Apps Script.
 async function httpGet(url) {
   const res = await fetch(url, { method: 'GET' });
   if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
@@ -28,19 +30,88 @@ async function httpGet(url) {
 async function httpPost(url, body) {
   const res = await fetch(url, {
     method: 'POST',
-    // Wichtig für Apps Script + CORS: "simple request", damit KEIN Preflight (OPTIONS) gesendet wird
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // simple request, no preflight
     body: JSON.stringify(body || {}),
   });
   if (!res.ok) throw new Error(`POST ${url} -> ${res.status}`);
   return res.json();
 }
 
-
-
+// ===================== UTILS =====================
 function cn(...xs){ return xs.filter(Boolean).join(' '); }
 function isEmail(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x); }
+function asBoolTF(v){ return String(v).toUpperCase() === 'TRUE'; }
+function toTF(v){ return v ? 'TRUE' : 'FALSE'; }
 
+// CSV parsing (supports ; , \t, quotes, german headers)
+function detectDelimiter(headerLine) {
+  const c = (s,ch)=> (s.match(new RegExp(`\\${ch}`,'g'))||[]).length;
+  const candidates = [{d:';', n:c(headerLine,';')}, {d:',', n:c(headerLine,',')}, {d:'\t', n:c(headerLine,'\t')}];
+  candidates.sort((a,b)=>b.n-a.n);
+  return candidates[0].n>0 ? candidates[0].d : ',';
+}
+function normalizeKey(k){
+  const s = String(k||'').toLowerCase().replace(/\s+/g,'').replace(/[-_]/g,'');
+  if (/^(email|e?mail|e\-?mail|mailadresse)$/.test(s)) return 'email';
+  if (/^(lastname|nachname|name$)$/.test(s)) return 'lastName';
+  if (/^(firstname|vorname)$/.test(s)) return 'firstName';
+  if (/^(company|firma|unternehmen|organisation)$/.test(s)) return 'company';
+  if (/^(position|titel|rolle)$/.test(s)) return 'position';
+  if (/^(phone|telefon|telefonnummer|tel)$/.test(s)) return 'phone';
+  if (/^(mobile|handy|mobil)$/.test(s)) return 'mobile';
+  return k; // fallback
+}
+function splitCSV(line, delim) {
+  const out = [];
+  let cur = '', inQ = false;
+  for (let i=0;i<line.length;i++){
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i+1] === '"'){ cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ) {
+      out.push(cur); cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  out.push(cur);
+  return out;
+}
+async function parseCSV(file) {
+  const textRaw = await file.text();
+  const text = textRaw.replace(/^\uFEFF/,''); // remove BOM
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length>0);
+  if (!lines.length) return [];
+
+  const delim = detectDelimiter(lines[0]);
+  const headersRaw = splitCSV(lines[0], delim).map(h=>h.trim());
+  const headers = headersRaw.map(normalizeKey);
+
+  const data = [];
+  for (let r=1;r<lines.length;r++){
+    const cols = splitCSV(lines[r], delim).map(c=>c.trim());
+    const rec = {};
+    headers.forEach((h,i)=> rec[h] = (cols[i]!==undefined ? cols[i] : ''));
+    const email = rec.email || '';
+    const last  = rec.lastName || '';
+    const comp  = rec.company || '';
+    if (email && last && comp) {
+      data.push({
+        email: email,
+        lastName: last,
+        company: comp,
+        firstName: rec.firstName || '',
+        position: rec.position || '',
+        phone: rec.phone || '',
+        mobile: rec.mobile || ''
+      });
+    }
+  }
+  return data;
+}
+
+// ===================== APP =====================
 function App(){
   const [page, setPage] = useState('login');
   const [authed, setAuthed] = useState(false);
@@ -117,7 +188,7 @@ function Login({ user, setUser, pw, setPw, onSubmit, err }){
   );
 }
 
-// ---- Dashboard ----
+// ===================== DASHBOARD =====================
 function Dashboard(){
   const [stats, setStats] = useState({ sent:0, replies:0, hot:0, needReview:0, meetings:0 });
   const [contacts, setContacts] = useState([]);
@@ -238,7 +309,7 @@ function Dashboard(){
   );
 }
 
-// ---- Templates ----
+// ===================== TEMPLATES =====================
 function Templates(){
   const [list, setList] = useState([]);
   const [active, setActive] = useState('');
@@ -295,7 +366,7 @@ function Templates(){
   );
 }
 
-// ---- Blacklist ----
+// ===================== BLACKLIST =====================
 function Blacklist(){
   const [q, setQ] = useState('');
   const [withBounces, setWithBounces] = useState(true);
@@ -315,7 +386,7 @@ function Blacklist(){
 
   const add = async ()=>{
     const email = (newEmail||'').trim();
-    if(!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return alert('Bitte gültige E‑Mail');
+    if(!email || !isEmail(email)) return alert('Bitte gültige E-Mail');
     try{ await httpPost(API.addBlacklist(), { email }); setNewEmail(''); await load(); }catch(e){ alert(e.message||'Fehler'); }
   };
 
@@ -347,37 +418,21 @@ function Blacklist(){
   );
 }
 
-// ---- Kontakte Upload ----
+// ===================== KONTAKTE (UPLOAD) =====================
 function Kontakte(){
   const [file, setFile] = useState(null);
   const [rows, setRows] = useState([]);
   const [mode, setMode] = useState('append');
   const [info, setInfo] = useState('');
 
-  const parseCSV = async (f) => {
-    const text = await f.text();
-    const lines = text.split(/\r?\n/).filter(Boolean);
-    if (!lines.length) return [];
-    const headers = lines[0].split(/,|;|\t/).map(h=>h.trim());
-    const data = [];
-    for (let i=1;i<lines.length;i++){
-      const cols = lines[i].split(/,|;|\t/);
-      const rec = {};
-      headers.forEach((h,ix) => rec[h] = (cols[ix]||'').trim());
-      data.push(rec);
-    }
-    return data;
-  };
-
   const onFile = async (e)=>{
     const f = e.target.files && e.target.files[0];
     setFile(f||null);
     if (!f) return;
-    if (f.name.toLowerCase().endsWith('.csv')) {
+    if (/\.(csv)$/i.test(f.name)) {
       const parsed = await parseCSV(f);
-      const ok = parsed.filter(r => r.email && r.lastName && r.company);
-      setRows(ok);
-      setInfo(`Gefunden: ${ok.length} Zeilen (CSV)`);
+      setRows(parsed);
+      setInfo(`Gefunden: ${parsed.length} Zeilen (CSV)`);
     } else {
       setRows([]);
       setInfo('Bitte CSV verwenden (XLSX Support später via SheetJS)');
@@ -386,7 +441,7 @@ function Kontakte(){
 
   const upload = async ()=>{
     if (!rows.length) return alert('Keine gültigen Zeilen');
-    try { await httpPost(API.upload(), { rows }); alert('Upload gesendet'); }
+    try { await httpPost(API.upload(), { rows, mode }); alert('Upload gesendet'); }
     catch(e){ alert(e.message||'Fehler beim Upload'); }
   };
   const prepare = async ()=>{
@@ -411,9 +466,11 @@ function Kontakte(){
         {rows.length>0 && (
           <div className="table-wrap">
             <table className="table small">
-              <thead><tr><th>email</th><th>lastName</th><th>company</th></tr></thead>
+              <thead><tr><th>email</th><th>lastName</th><th>company</th><th>firstName</th><th>position</th></tr></thead>
               <tbody>
-                {rows.slice(0,10).map((r,i)=>(<tr key={i}><td>{r.email}</td><td>{r.lastName}</td><td>{r.company}</td></tr>))}
+                {rows.slice(0,10).map((r,i)=>(
+                  <tr key={i}><td>{r.email}</td><td>{r.lastName}</td><td>{r.company}</td><td>{r.firstName}</td><td>{r.position}</td></tr>
+                ))}
               </tbody>
             </table>
             <div className="muted">Vorschau: {rows.length} Zeilen (erste 10)</div>
