@@ -8,90 +8,24 @@
   <!-- Dein Stylesheet -->
   <link rel="stylesheet" href="styles.css" />
 
-  <!-- React & ReactDOM (UMD) -->
+  <!-- React UMD -->
   <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-  <!-- Optional: pdf.js, falls du PDF-Upload nutzt -->
-  <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script> -->
+
+  <!-- pdf.js (nur nötig, wenn PDF-Upload genutzt wird) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
+  <script>
+    // Worker setzen, damit parsePDF zuverlässig läuft
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+  </script>
 </head>
 <body>
-  <div class="topbar">
-    <div class="brand">
-      <div class="logo">AG</div>
-      <div>
-        <div class="brand-top">Email-Akquise Dashboard</div>
-        <div class="brand-bottom">avus gastro</div>
-      </div>
-    </div>
-    <div class="menu">
-      <a class="btn link" href="https://github.com/gsg-abitreffen2026/avus" target="_blank" rel="noreferrer">Repo</a>
-    </div>
-  </div>
+  <div id="root"></div>
 
-  <div id="root" class="container"></div>
-
-  <!-- WICHTIG: Base-URL für alle API-Aufrufe -->
-<!-- direkt über den Script-Dateien -->
-<script>
-  window.App = window.App || {};
-  window.App.API_BASE = "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
-</script>
-<script>
-/* FORCE QUERY-PATH + POST-ONLY SHIM */
-(function () {
-  window.App = window.App || {};
-  function buildUrl(p){ 
-    var base = (window.App.API_BASE || '').replace(/\/$/, '');
-    return base + '?path=' + encodeURIComponent(p || '/');
-  }
-  async function post(path, body){
-    const res = await fetch(buildUrl(path), {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body)),
-      redirect: 'manual'
-    });
-    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
-      throw new Error('GAS redirect – prüfe Web-App Deployment & Zugriffsrechte');
-    }
-    const txt = await res.text();
-    try { return JSON.parse(txt); } catch { return txt; }
-  }
-  // überschreibt ggf. alte Implementierungen
-  window.App.httpGet  = (p)      => post(p, '');
-  window.App.httpPost = (p, b)   => post(p, b);
-})();
-</script>
-
-  
-<script src="app.boot.js?v=20251023a"></script>
-<script src="app.state.js?v=20251023a"></script>
-
-<script src="app.components.templates.js?v=20251023a"></script>
-<script src="app.components.signatures.js?v=20251023a"></script>
-<script src="app.components.upload.js?v=20251023a"></script>
-<script src="app.components.errorlist.js?v=20251023a"></script>
-
-<script src="app.dashboard.js?v=20251023a"></script>
-<script src="app.index.js?v=20251023a"></script>
-
-  
- <script>
-  window.App = window.App || {};
-  window.App.API_BASE = "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
-</script>
-
-<script src="app.boot.js"></script>
-<script src="app.state.js"></script>
-...
-
-
-  <script src="app.components.templates.js"></script>
-  <script src="app.components.signatures.js"></script>
-  <script src="app.components.upload.js"></script>
-  <script src="app.components.errorlist.js"></script>
-
-  <script src="app.dashboard.js"></script>
-  <script src="app.index.js"></script>
+  <!-- Deine zusammengefügte App -->
+  <script src="app.js?v=20251023c"></script>
 </body>
 </html>
