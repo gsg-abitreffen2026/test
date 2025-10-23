@@ -1,5 +1,4 @@
-
-// (same content as previous cell, regenerated)
+// ===== avus smart-cap Dashboard (updated) =====
 const {
   useState,
   useEffect,
@@ -34,6 +33,13 @@ const API = {
   prepareCampaign: () => `${API_BASE}?path=api/campaign/prepare`,
   startCampaign: () => `${API_BASE}?path=api/campaign/start`,
   stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
+
+  // NEW: settings read/save for signature (best-effort; backend may ignore unknowns)
+  settings: () => `${API_BASE}?path=api/settings`,
+  saveSettings: () => `${API_BASE}?path=api/settings/save`,
+
+  // NEW: remove a contact (best-effort; falls back to deactivating)
+  removeContact: () => `${API_BASE}?path=api/contacts/remove`,
 };
 
 async function httpGet(url) {
@@ -60,6 +66,7 @@ function normalizePhone(x) { return String(x || "").replace(/[^\d+]/g, ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function toTF(v){ return v ? "TRUE" : "FALSE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
+
 function detectDelimiter(headerLine) {
   const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
   const candidates = [
@@ -79,6 +86,7 @@ function normalizeKey(k) {
   if (/^(position|titel|rolle)$/.test(s)) return "position";
   if (/^(phone|telefon|telefonnummer|tel)$/.test(s)) return "phone";
   if (/^(mobile|handy|mobil)$/.test(s)) return "mobile";
+  if (/^(anrede|salutation|gruess|grussformel)$/.test(s)) return "salutation"; // NEW
   return k;
 }
 function splitCSV(line, delim) {
@@ -112,6 +120,7 @@ async function parseCSV(file) {
         email: email, lastName: last, company: comp,
         firstName: rec.firstName || "", position: rec.position || "",
         phone: rec.phone || "", mobile: rec.mobile || "",
+        salutation: rec.salutation || "", // NEW
       });
     }
   }
@@ -157,7 +166,7 @@ async function parsePDF(file) {
       buckets[key].push(it.str);
     }
     const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
-    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
+    return { company: join(buckets.firma), salutation: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
   }
   const collected = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -171,7 +180,7 @@ async function parsePDF(file) {
       const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
       const minimal = rec.company && rec.last;
       if (hasEmail || minimal) {
-        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "" });
+        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", salutation: rec.salutation || "" });
       }
     }
   }
@@ -233,6 +242,7 @@ function Login({ user, setUser, pw, setPw, onSubmit, err }) {
     <PrimaryButton>Einloggen</PrimaryButton>
   </form></section>);
 }
+
 function Dashboard() {
   const [stats, setStats] = React.useState({ sent: 0, replies: 0, hot: 0, needReview: 0, meetings: 0 });
   const [contacts, setContacts] = React.useState([]);
@@ -243,17 +253,47 @@ function Dashboard() {
   const [campaignRunning, setCampaignRunning] = React.useState(false);
   const [updates, setUpdates] = React.useState({});
   const [showInactive, setShowInactive] = React.useState(true);
+  const [tplList, setTplList] = React.useState([]);            // NEW
+  const [selectedTpl, setSelectedTpl] = React.useState("");    // NEW
+
   const loadAll = React.useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [s, c] = await Promise.all([ httpGet(API.stats()), httpGet(API.contacts(limit, showInactive)) ]);
-      setStats(s); const arr = Array.isArray(c.contacts) ? c.contacts : []; setContacts(arr);
+      const [s, c, tpls] = await Promise.all([
+        httpGet(API.stats()),
+        httpGet(API.contacts(limit, showInactive)),
+        httpGet(API.templates()),    // NEW
+      ]);
+      setStats(s);
+      const arr = Array.isArray(c.contacts) ? c.contacts : [];
+      // NEW: client-side filter to hide Opt-outs completely
+      const filtered = arr.filter(r => String(r.opt_out).toUpperCase() !== "TRUE");
+      setContacts(filtered);
+      const l = Array.isArray(tpls) ? tpls : [];
+      setTplList(l);
+      if (!selectedTpl && l.length) setSelectedTpl(l[0].name || "");
     } catch (e) { setError(e.message || "Fehler beim Laden"); }
     finally { setLoading(false); }
-  }, [limit, showInactive]);
+  }, [limit, showInactive, selectedTpl]);
   React.useEffect(() => { loadAll(); }, [loadAll]);
-  const start = async () => { setCampaignRunning(true); try { await httpPost(API.startCampaign(), {}); } catch (e) { setError(e.message); } };
-  const stop = async () => { setCampaignRunning(false); try { await httpPost(API.stopCampaign(), {}); } catch (e) { setError(e.message); } };
+
+  const start = async () => {
+    setCampaignRunning(true);
+    try { await httpPost(API.startCampaign(), {}); }
+    catch (e) { setError(e.message); }
+  };
+  const stop = async () => {
+    setCampaignRunning(false);
+    try { await httpPost(API.stopCampaign(), {}); }
+    catch (e) { setError(e.message); }
+  };
+  const saveCampaignSettings = async () => { // NEW: send selected template + perDay to prepare
+    try {
+      await httpPost(API.prepareCampaign(), { sequence_id: selectedTpl, per_day: perDay });
+      alert("Kampagne vorbereitet.");
+    } catch (e) { alert(e.message || "Fehler"); }
+  };
+
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
     const newActive = String(row.active).toUpperCase() === "TRUE" ? "FALSE" : "TRUE";
@@ -265,7 +305,21 @@ function Dashboard() {
     if (!payload.length) return;
     try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); } catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
   };
+
+  // ToDos = "angeschrieben" (finished) – add remove option
   const finishedTodos = React.useMemo(() => contacts.filter((r) => String(r.status) === "finished" && (r.last_sent_at || r.lastMailAt)), [contacts]);
+  const removeContact = async (r) => {
+    const key = (r.id || r.email || "").toString();
+    try {
+      // try hard delete
+      await httpPost(API.removeContact(), { id: r.id, email: r.email });
+    } catch (e) {
+      // fallback: deactivate
+      await httpPost(API.toggleActive(), { updates: [{ id: key, email: r.email, active: "FALSE" }] });
+    }
+    setContacts(prev => prev.filter(x => (x.id || x.email) !== key));
+  };
+
   return (<section className="grid gap">
     {error && <div className="error">{error}</div>}
     <div className="grid cols-2 gap">
@@ -275,13 +329,21 @@ function Dashboard() {
             <div className="grow"><div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
               <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div></div>
             {(r.phone || r.mobile) && (<a className="btn link" href={`tel:${String(r.phone || r.mobile).replace(/\s+/g, "")}`}>Anrufen</a>)}
+            <button className="btn danger" onClick={() => removeContact(r)} title="Kontakt entfernen">Entfernen</button>
           </li>))}
         </ul>
       </Section>
+
       <Section title="Kampagneneinstellungen">
         <div className="grid gap">
           <Field label="Sendouts pro Tag"><input type="number" min="0" value={perDay} onChange={(e) => setPerDay(Number(e.target.value || 0))} /></Field>
+          <Field label="Template-Auswahl">
+            <select value={selectedTpl} onChange={(e) => setSelectedTpl(e.target.value)}>
+              {tplList.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+            </select>
+          </Field>
           <div className="row gap">
+            <PrimaryButton onClick={saveCampaignSettings}>Einstellungen speichern</PrimaryButton>
             <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
             <TextButton onClick={stop} disabled={!campaignRunning}>Stoppen</TextButton>
             <TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>
@@ -289,6 +351,7 @@ function Dashboard() {
         </div>
       </Section>
     </div>
+
     <div className="grid cols-3 gap">
       <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
       <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
@@ -296,6 +359,7 @@ function Dashboard() {
       <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
       <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
     </div>
+
     <Section title="Kontakte" right={<div className="row gap">
       <label className="row gap"><span>Anzahl</span>
         <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
@@ -327,38 +391,75 @@ function Dashboard() {
     </Section>
   </section>);
 }
+
 function Templates() {
   const [list, setList] = React.useState([]);
   const [active, setActive] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState("");
   const [cursorTarget, setCursorTarget] = React.useState(null);
+  const [signature, setSignature] = React.useState(""); // NEW
+
   const load = React.useCallback(async () => {
     setLoading(true); setErr("");
-    try { const res = await httpGet(API.templates()); setList(Array.isArray(res) ? res : []); setActive(res && res[0] && res[0].name ? res[0].name : ""); }
+    try {
+      const [res, settings] = await Promise.all([ httpGet(API.templates()), httpGet(API.settings()).catch(() => ({})) ]);
+      const arr = Array.isArray(res) ? res : [];
+      setList(arr);
+      setActive(arr && arr[0] && arr[0].name ? arr[0].name : "");
+      setSignature(settings.Signatur || settings.signature_html || settings.signature || ""); // best-effort
+    }
     catch (e) { setErr(e.message || "Fehler"); }
     finally { setLoading(false); }
   }, []);
   React.useEffect(() => { load(); }, [load]);
+
   const tpl = React.useMemo(() => list.find((t) => t.name === active) || null, [list, active]);
   const updateStep = (idx, patch) => {
     setList((prev) => prev.map((t) => t.name !== active ? t : ({ ...t, steps: t.steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)) })));
   };
   const save = async () => {
     if (!tpl) return;
-    const payload = { sequence_id: active, total_steps: (tpl.steps || []).length, steps: (tpl.steps || []).map((s) => ({ step: s.step || "", subject: s.subject || "", body_html: s.body_html || "", delay_days: Number(s.delay_days || 0) })) };
-    try { await httpPost(API.saveTemplate(active), payload); alert("Template gespeichert"); } catch (e) { alert(e.message || "Fehler"); }
+    const payload = {
+      sequence_id: active,
+      total_steps: (tpl.steps || []).length,
+      steps: (tpl.steps || []).map((s) => ({
+        step: s.step || "", subject: s.subject || "", body_html: s.body_html || "", delay_days: Number(s.delay_days || 0),
+        signature_html: s.signature_html || signature || "", // NEW: attach signature per step (best-effort)
+      }))
+    };
+    try { await httpPost(API.saveTemplate(active), payload); alert("Template gespeichert"); }
+    catch (e) { alert(e.message || "Fehler"); }
   };
-  const fields = [{ key: "{{firstName}}", label: "Vorname" },{ key: "{{lastName}}", label: "Nachname" },{ key: "{{company}}", label: "Firma" },{ key: "{{position}}", label: "Position" }];
+  const saveSignatureOnly = async () => {
+    try { await httpPost(API.saveSettings(), { signature_html: signature }); alert("Signatur gespeichert"); }
+    catch (e) { alert(e.message || "Fehler beim Speichern der Signatur"); }
+  };
+
+  const fields = [
+    { key: "{{firstName}}", label: "Vorname" },
+    { key: "{{lastName}}", label: "Nachname" },
+    { key: "{{company}}", label: "Firma" },
+    { key: "{{position}}", label: "Position" },
+    { key: "{{spName}}", label: "Absender-Name" }, // NEW
+  ];
+
   const insertAtCursor = (token) => {
     const el = cursorTarget; if (!el) return;
     const start = el.selectionStart || 0; const end = el.selectionEnd || 0;
     const value = el.value || "";
     const next = value.slice(0, start) + token + value.slice(end);
-    const setFn = el.dataset.kind === "subject" ? (v) => el._updateSubject(v) : (v) => el._updateBody(v);
-    setFn(next);
+    const kind = el.dataset.kind;
+    if (kind === "subject") el._updateSubject && el._updateSubject(next);
+    else if (kind === "body") el._updateBody && el._updateBody(next);
+    else if (kind === "signature") setSignature(next);
     requestAnimationFrame(() => { el.focus(); const pos = start + token.length; el.setSelectionRange(pos, pos); });
   };
+
+  // helper to silence React "callback ref returns a function" warning
+  const setUpdateSubjectRef = (el, updater) => { if (el) { el._updateSubject = updater; } };
+  const setUpdateBodyRef = (el, updater) => { if (el) { el._updateBody = updater; } };
+
   return (<section className="grid gap">
     {err && <div className="error">{err}</div>}
     <div className="row gap">
@@ -370,21 +471,57 @@ function Templates() {
     {tpl ? (<div className="grid gap">
       {(tpl.steps || []).map((s, i) => (<div key={i} className="card">
         <div className="strong">{s.step}</div>
-        <Field label="Betreff"><input value={s.subject || ""} data-kind="subject" onFocus={(e) => setCursorTarget(e.target)} ref={(el) => el && (el._updateSubject = (v) => updateStep(i, { subject: v }))} onChange={(e) => updateStep(i, { subject: e.target.value })} /></Field>
-        <Field label="Body (HTML)"><textarea rows="8" value={s.body_html || ""} data-kind="body" onFocus={(e) => setCursorTarget(e.target)} ref={(el) => el && (el._updateBody = (v) => updateStep(i, { body_html: v }))} onChange={(e) => updateStep(i, { body_html: e.target.value })} /></Field>
+        <Field label="Betreff">
+          <input
+            value={s.subject || ""}
+            data-kind="subject"
+            onFocus={(e) => setCursorTarget(e.target)}
+            ref={(el) => { setUpdateSubjectRef(el, (v) => updateStep(i, { subject: v })); }}
+            onChange={(e) => updateStep(i, { subject: e.target.value })}
+          />
+        </Field>
+        <Field label="Body (HTML)">
+          <textarea
+            rows="8"
+            value={s.body_html || ""}
+            data-kind="body"
+            onFocus={(e) => setCursorTarget(e.target)}
+            ref={(el) => { setUpdateBodyRef(el, (v) => updateStep(i, { body_html: v })); }}
+            onChange={(e) => updateStep(i, { body_html: e.target.value })}
+          />
+        </Field>
         <div className="row gap wrap">
           {fields.map((f) => (<TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>{f.label}</TextButton>))}
         </div>
         <Field label="Verzögerung (Tage)"><input type="number" value={s.delay_days || 0} onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })} /></Field>
+        {/* NEW: per-step signature editor (pre-filled from Settings) */}
+        <Field label="Signatur (HTML, optional)">
+          <textarea
+            rows="4"
+            value={s.signature_html ?? signature}
+            data-kind="signature"
+            onFocus={(e) => setCursorTarget(e.target)}
+            onChange={(e) => updateStep(i, { signature_html: e.target.value })}
+          />
+        </Field>
       </div>))}
-      <div className="row end"><PrimaryButton onClick={save}>Speichern</PrimaryButton></div>
+      <div className="row between">
+        <div className="row gap wrap">
+          {fields.map((f) => (<TextButton key={"sig-" + f.key} onClick={() => insertAtCursor(f.key)}>Token in Signatur</TextButton>))}
+        </div>
+        <div className="row gap">
+          <TextButton onClick={saveSignatureOnly}>Signatur speichern</TextButton>
+          <PrimaryButton onClick={save}>Template(s) speichern</PrimaryButton>
+        </div>
+      </div>
     </div>) : (<div className="muted">Keine Templates geladen.</div>)}
   </section>);
 }
+
 function Blacklist() {
   const [q, setQ] = React.useState(""); const [withBounces, setWithBounces] = React.useState(true);
   const [rows, setRows] = React.useState({ blacklist: [], bounces: [] }); const [newEmail, setNewEmail] = React.useState(""); const [err, setErr] = React.useState("");
-  const load = React.useCallback(async () => { setErr(""); try { const r = await httpGet(API.blacklist(q, withBounces)); setRows(r); } catch (e) { setErr(e.message || "Fehler"); } }, [q, withBounces]);
+  const load = React.useCallback(async () => { setErr(""); try { const r = await httpGet(API.blacklist(q, withBounces)); setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] }); } catch (e) { setErr(e.message || "Fehler"); } }, [q, withBounces]);
   React.useEffect(() => { load(); }, [load]);
   const add = async () => { const email = (newEmail || "").trim(); if (!email || !isEmail(email)) return alert("Bitte gültige E-Mail");
     try { await httpPost(API.addBlacklist(), { email }); setNewEmail(""); await load(); } catch (e) { alert(e.message || "Fehler"); } };
@@ -396,14 +533,19 @@ function Blacklist() {
       <TextButton onClick={load}>Suchen</TextButton>
     </Toolbar>
     <div className="grid cols-2 gap">
-      <Section title="Blacklist"><ul className="list">{rows.blacklist.map((x, i) => (<li key={x + "|" + i}>{x}</li>))}</ul></Section>
-      <Section title="Bounces"><ul className="list">{rows.bounces.map((x, i) => (<li key={x + "|" + i}>{x}</li>))}</ul></Section>
+      <Section title="Blacklist">
+        <ul className="list bulleted">{(rows.blacklist||[]).map((x, i) => (<li key={"bl-" + i}><span className="mono">{x}</span></li>))}</ul>
+      </Section>
+      <Section title="Bounces">
+        <ul className="list bulleted">{(rows.bounces||[]).map((x, i) => (<li key={"bo-" + i}><span className="mono">{x}</span></li>))}</ul>
+      </Section>
     </div>
     <Section title="Hinzufügen">
       <div className="row gap"><input placeholder="name@firma.de" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} /><PrimaryButton onClick={add}>Hinzufügen</PrimaryButton></div>
     </Section>
   </section>);
 }
+
 function Kontakte() {
   const [file, setFile] = React.useState(null);
   const [rows, setRows] = React.useState([]);
@@ -436,10 +578,15 @@ function Kontakte() {
       {info && <div className="muted">{info}</div>}
       {rows.length > 0 && (<div className="table-wrap">
         <table className="table small">
-          <thead><tr><th>email</th><th>lastName</th><th>company</th><th>firstName</th><th>position</th><th>phone</th></tr></thead>
-          <tbody>{rows.slice(0, 15).map((r, i) => (<tr key={i}><td>{r.email}</td><td>{r.lastName}</td><td>{r.company}</td><td>{r.firstName}</td><td>{r.position}</td><td>{r.phone}</td></tr>))}</tbody>
+          <thead><tr>
+            <th>email</th><th>lastName</th><th>company</th><th>firstName</th><th>salutation</th><th>position</th><th>phone</th><th>mobile</th>
+          </tr></thead>
+          <tbody>{rows.slice(0, 15).map((r, i) => (<tr key={i}>
+            <td>{r.email}</td><td>{r.lastName}</td><td>{r.company}</td><td>{r.firstName}</td><td>{r.salutation || ""}</td><td>{r.position}</td><td>{r.phone}</td><td>{r.mobile || ""}</td>
+          </tr>))}</tbody>
         </table><div className="muted">Vorschau: {rows.length} Zeilen (erste 15)</div></div>)}
     </Section>
   </section>);
 }
+
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
