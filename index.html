@@ -36,7 +36,34 @@
   window.App = window.App || {};
   window.App.API_BASE = "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 </script>
+<script>
+/* FORCE QUERY-PATH + POST-ONLY SHIM */
+(function () {
+  window.App = window.App || {};
+  function buildUrl(p){ 
+    var base = (window.App.API_BASE || '').replace(/\/$/, '');
+    return base + '?path=' + encodeURIComponent(p || '/');
+  }
+  async function post(path, body){
+    const res = await fetch(buildUrl(path), {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: body == null ? '' : (typeof body === 'string' ? body : JSON.stringify(body)),
+      redirect: 'manual'
+    });
+    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+      throw new Error('GAS redirect – prüfe Web-App Deployment & Zugriffsrechte');
+    }
+    const txt = await res.text();
+    try { return JSON.parse(txt); } catch { return txt; }
+  }
+  // überschreibt ggf. alte Implementierungen
+  window.App.httpGet  = (p)      => post(p, '');
+  window.App.httpPost = (p, b)   => post(p, b);
+})();
+</script>
 
+  
 <script src="app.boot.js?v=20251023a"></script>
 <script src="app.state.js?v=20251023a"></script>
 
