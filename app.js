@@ -1,4 +1,5 @@
-// ===== avus smart-cap Dashboard (updated) =====
+
+// ===== avus smart-cap Dashboard (updated: templates signature UX) =====
 const {
   useState,
   useEffect,
@@ -34,11 +35,11 @@ const API = {
   startCampaign: () => `${API_BASE}?path=api/campaign/start`,
   stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
 
-  // NEW: settings read/save for signature (best-effort; backend may ignore unknowns)
+  // settings for signature
   settings: () => `${API_BASE}?path=api/settings`,
   saveSettings: () => `${API_BASE}?path=api/settings/save`,
 
-  // NEW: remove a contact (best-effort; falls back to deactivating)
+  // remove a contact (best-effort; falls back to deactivating)
   removeContact: () => `${API_BASE}?path=api/contacts/remove`,
 };
 
@@ -86,7 +87,7 @@ function normalizeKey(k) {
   if (/^(position|titel|rolle)$/.test(s)) return "position";
   if (/^(phone|telefon|telefonnummer|tel)$/.test(s)) return "phone";
   if (/^(mobile|handy|mobil)$/.test(s)) return "mobile";
-  if (/^(anrede|salutation|gruess|grussformel)$/.test(s)) return "salutation"; // NEW
+  if (/^(anrede|salutation|gruess|grussformel)$/.test(s)) return "salutation";
   return k;
 }
 function splitCSV(line, delim) {
@@ -120,7 +121,7 @@ async function parseCSV(file) {
         email: email, lastName: last, company: comp,
         firstName: rec.firstName || "", position: rec.position || "",
         phone: rec.phone || "", mobile: rec.mobile || "",
-        salutation: rec.salutation || "", // NEW
+        salutation: rec.salutation || "",
       });
     }
   }
@@ -253,8 +254,8 @@ function Dashboard() {
   const [campaignRunning, setCampaignRunning] = React.useState(false);
   const [updates, setUpdates] = React.useState({});
   const [showInactive, setShowInactive] = React.useState(true);
-  const [tplList, setTplList] = React.useState([]);            // NEW
-  const [selectedTpl, setSelectedTpl] = React.useState("");    // NEW
+  const [tplList, setTplList] = React.useState([]);
+  const [selectedTpl, setSelectedTpl] = React.useState("");
 
   const loadAll = React.useCallback(async () => {
     setLoading(true); setError("");
@@ -262,12 +263,11 @@ function Dashboard() {
       const [s, c, tpls] = await Promise.all([
         httpGet(API.stats()),
         httpGet(API.contacts(limit, showInactive)),
-        httpGet(API.templates()),    // NEW
+        httpGet(API.templates()),
       ]);
       setStats(s);
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
-      // NEW: client-side filter to hide Opt-outs completely
-      const filtered = arr.filter(r => String(r.opt_out).toUpperCase() !== "TRUE");
+      const filtered = arr.filter(r => String(r.opt_out).toUpperCase() !== "TRUE"); // hide opt-outs
       setContacts(filtered);
       const l = Array.isArray(tpls) ? tpls : [];
       setTplList(l);
@@ -287,7 +287,7 @@ function Dashboard() {
     try { await httpPost(API.stopCampaign(), {}); }
     catch (e) { setError(e.message); }
   };
-  const saveCampaignSettings = async () => { // NEW: send selected template + perDay to prepare
+  const saveCampaignSettings = async () => {
     try {
       await httpPost(API.prepareCampaign(), { sequence_id: selectedTpl, per_day: perDay });
       alert("Kampagne vorbereitet.");
@@ -306,17 +306,11 @@ function Dashboard() {
     try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); } catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
   };
 
-  // ToDos = "angeschrieben" (finished) – add remove option
   const finishedTodos = React.useMemo(() => contacts.filter((r) => String(r.status) === "finished" && (r.last_sent_at || r.lastMailAt)), [contacts]);
   const removeContact = async (r) => {
     const key = (r.id || r.email || "").toString();
-    try {
-      // try hard delete
-      await httpPost(API.removeContact(), { id: r.id, email: r.email });
-    } catch (e) {
-      // fallback: deactivate
-      await httpPost(API.toggleActive(), { updates: [{ id: key, email: r.email, active: "FALSE" }] });
-    }
+    try { await httpPost(API.removeContact(), { id: r.id, email: r.email }); }
+    catch (e) { await httpPost(API.toggleActive(), { updates: [{ id: key, email: r.email, active: "FALSE" }] }); }
     setContacts(prev => prev.filter(x => (x.id || x.email) !== key));
   };
 
@@ -356,8 +350,8 @@ function Dashboard() {
       <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
       <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
       <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
-      <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
-      <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
+      <section className="card kpi"><div className="muted">Need Review</div><div className="kpi-num">{stats.needReview}</div></section>
+      <section className="card kpi"><div className="muted">Meetings</div><div className="kpi-num">{stats.meetings}</div></section>
     </div>
 
     <Section title="Kontakte" right={<div className="row gap">
@@ -398,7 +392,8 @@ function Templates() {
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState("");
   const [cursorTarget, setCursorTarget] = React.useState(null);
-  const [signature, setSignature] = React.useState(""); // NEW
+  const [signature, setSignature] = React.useState("");
+  const [showSig, setShowSig] = React.useState(false);
 
   const load = React.useCallback(async () => {
     setLoading(true); setErr("");
@@ -407,7 +402,7 @@ function Templates() {
       const arr = Array.isArray(res) ? res : [];
       setList(arr);
       setActive(arr && arr[0] && arr[0].name ? arr[0].name : "");
-      setSignature(settings.Signatur || settings.signature_html || settings.signature || ""); // best-effort
+      setSignature(settings.Signatur || settings.signature_html || settings.signature || "");
     }
     catch (e) { setErr(e.message || "Fehler"); }
     finally { setLoading(false); }
@@ -425,7 +420,6 @@ function Templates() {
       total_steps: (tpl.steps || []).length,
       steps: (tpl.steps || []).map((s) => ({
         step: s.step || "", subject: s.subject || "", body_html: s.body_html || "", delay_days: Number(s.delay_days || 0),
-        signature_html: s.signature_html || signature || "", // NEW: attach signature per step (best-effort)
       }))
     };
     try { await httpPost(API.saveTemplate(active), payload); alert("Template gespeichert"); }
@@ -441,7 +435,7 @@ function Templates() {
     { key: "{{lastName}}", label: "Nachname" },
     { key: "{{company}}", label: "Firma" },
     { key: "{{position}}", label: "Position" },
-    { key: "{{spName}}", label: "Absender-Name" }, // NEW
+    { key: "{{sp_first_name}} {{sp_last_name}}", label: "Absender-Name" },
   ];
 
   const insertAtCursor = (token) => {
@@ -452,11 +446,9 @@ function Templates() {
     const kind = el.dataset.kind;
     if (kind === "subject") el._updateSubject && el._updateSubject(next);
     else if (kind === "body") el._updateBody && el._updateBody(next);
-    else if (kind === "signature") setSignature(next);
     requestAnimationFrame(() => { el.focus(); const pos = start + token.length; el.setSelectionRange(pos, pos); });
   };
 
-  // helper to silence React "callback ref returns a function" warning
   const setUpdateSubjectRef = (el, updater) => { if (el) { el._updateSubject = updater; } };
   const setUpdateBodyRef = (el, updater) => { if (el) { el._updateBody = updater; } };
 
@@ -467,7 +459,24 @@ function Templates() {
         {list.map((t) => (<option key={t.name} value={t.name}>{t.name}</option>))}
       </select>
       <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
+      <TextButton onClick={() => setShowSig(s => !s)}>{showSig ? "Signatur ausblenden" : "Signatur"}</TextButton>
     </div>
+
+    {showSig && (
+      <div className="card">
+        <Field label="Signatur (HTML)">
+          <textarea
+            rows="5"
+            value={signature}
+            onChange={(e) => setSignature(e.target.value)}
+          />
+        </Field>
+        <div className="row end">
+          <PrimaryButton onClick={saveSignatureOnly}>Signatur speichern</PrimaryButton>
+        </div>
+      </div>
+    )}
+
     {tpl ? (<div className="grid gap">
       {(tpl.steps || []).map((s, i) => (<div key={i} className="card">
         <div className="strong">{s.step}</div>
@@ -494,25 +503,9 @@ function Templates() {
           {fields.map((f) => (<TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>{f.label}</TextButton>))}
         </div>
         <Field label="Verzögerung (Tage)"><input type="number" value={s.delay_days || 0} onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })} /></Field>
-        {/* NEW: per-step signature editor (pre-filled from Settings) */}
-        <Field label="Signatur (HTML, optional)">
-          <textarea
-            rows="4"
-            value={s.signature_html ?? signature}
-            data-kind="signature"
-            onFocus={(e) => setCursorTarget(e.target)}
-            onChange={(e) => updateStep(i, { signature_html: e.target.value })}
-          />
-        </Field>
       </div>))}
-      <div className="row between">
-        <div className="row gap wrap">
-          {fields.map((f) => (<TextButton key={"sig-" + f.key} onClick={() => insertAtCursor(f.key)}>Token in Signatur</TextButton>))}
-        </div>
-        <div className="row gap">
-          <TextButton onClick={saveSignatureOnly}>Signatur speichern</TextButton>
-          <PrimaryButton onClick={save}>Template(s) speichern</PrimaryButton>
-        </div>
+      <div className="row end">
+        <PrimaryButton onClick={save}>Template(s) speichern</PrimaryButton>
       </div>
     </div>) : (<div className="muted">Keine Templates geladen.</div>)}
   </section>);
