@@ -1,5 +1,4 @@
-
-// ===== avus smart-cap Dashboard (updated: templates signature UX) =====
+// ===== avus smart-cap Dashboard (updated: total_steps UI + robust signature load) =====
 const {
   useState,
   useEffect,
@@ -35,11 +34,9 @@ const API = {
   startCampaign: () => `${API_BASE}?path=api/campaign/start`,
   stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
 
-  // settings for signature
   settings: () => `${API_BASE}?path=api/settings`,
   saveSettings: () => `${API_BASE}?path=api/settings/save`,
 
-  // remove a contact (best-effort; falls back to deactivating)
   removeContact: () => `${API_BASE}?path=api/contacts/remove`,
 };
 
@@ -277,9 +274,22 @@ function Dashboard() {
   }, [limit, showInactive, selectedTpl]);
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
+  const pushTotalSteps = async (sequenceId, totalOverride) => {
+    try {
+      const tpl = (tplList || []).find(t => t.name === sequenceId) || null;
+      const total = (typeof totalOverride === "number" && totalOverride > 0)
+        ? totalOverride
+        : (tpl && Array.isArray(tpl.steps) ? tpl.steps.length : 0);
+      await httpPost(API.saveTemplate(sequenceId), { sequence_id: sequenceId, total_steps: total, set_total_on_step1: true });
+    } catch (e) { console.warn("pushTotalSteps failed:", e); }
+  };
+
   const start = async () => {
     setCampaignRunning(true);
-    try { await httpPost(API.startCampaign(), {}); }
+    try {
+      if (selectedTpl) await pushTotalSteps(selectedTpl);
+      await httpPost(API.startCampaign(), { sequence_id: selectedTpl });
+    }
     catch (e) { setError(e.message); }
   };
   const stop = async () => {
@@ -289,6 +299,7 @@ function Dashboard() {
   };
   const saveCampaignSettings = async () => {
     try {
+      if (selectedTpl) await pushTotalSteps(selectedTpl);
       await httpPost(API.prepareCampaign(), { sequence_id: selectedTpl, per_day: perDay });
       alert("Kampagne vorbereitet.");
     } catch (e) { alert(e.message || "Fehler"); }
@@ -394,6 +405,43 @@ function Templates() {
   const [cursorTarget, setCursorTarget] = React.useState(null);
   const [signature, setSignature] = React.useState("");
   const [showSig, setShowSig] = React.useState(false);
+  const [totalSteps, setTotalSteps] = React.useState(0); // NEW: UI-driven total steps
+
+  // best-effort extraction of signature from "settings" tab row 2, column "Signatur"
+  function extractSignature(settings) {
+    if (!settings) return "";
+    // direct fields
+    if (settings.Signatur) return settings.Signatur;
+    if (settings.signature_html) return settings.signature_html;
+    if (settings.signature) return settings.signature;
+
+    // array of rows or objects
+    if (Array.isArray(settings)) {
+      // try to find an entry that references the 'settings' tab (sheet) and row 2
+      let hit = settings.find(
+        (r, idx) =>
+          (String(r.tab || r.sheet || "").toLowerCase() === "settings" ||
+           String(r.name || "").toLowerCase() === "settings") &&
+          (r.row === 2 || r.r === 2 || idx === 1)
+      );
+      if (hit) return hit.Signatur || hit.signature || hit.signature_html || "";
+      // fallback: second element's Signatur
+      const second = settings[1];
+      if (second) return second.Signatur || second.signature || second.signature_html || "";
+    }
+
+    // nested objects
+    if (settings.settings) {
+      const s = settings.settings;
+      if (Array.isArray(s)) {
+        const second = s[1];
+        if (second) return second.Signatur || second.signature || second.signature_html || "";
+      } else if (typeof s === "object") {
+        return s.Signatur || s.signature || s.signature_html || "";
+      }
+    }
+    return "";
+  }
 
   const load = React.useCallback(async () => {
     setLoading(true); setErr("");
@@ -401,8 +449,17 @@ function Templates() {
       const [res, settings] = await Promise.all([ httpGet(API.templates()), httpGet(API.settings()).catch(() => ({})) ]);
       const arr = Array.isArray(res) ? res : [];
       setList(arr);
-      setActive(arr && arr[0] && arr[0].name ? arr[0].name : "");
-      setSignature(settings.Signatur || settings.signature_html || settings.signature || "");
+      const firstName = arr && arr[0] && arr[0].name ? arr[0].name : "";
+      setActive(firstName);
+      const sig = extractSignature(settings);
+      setSignature(sig || "");
+      // init total steps from first template if any
+      if (arr.length && Array.isArray(arr[0].steps)) {
+        const ts = typeof arr[0].total_steps === "number" ? arr[0].total_steps : arr[0].steps.length;
+        setTotalSteps(Math.max(1, Math.min(arr[0].steps.length, ts)));
+      } else {
+        setTotalSteps(0);
+      }
     }
     catch (e) { setErr(e.message || "Fehler"); }
     finally { setLoading(false); }
@@ -410,6 +467,15 @@ function Templates() {
   React.useEffect(() => { load(); }, [load]);
 
   const tpl = React.useMemo(() => list.find((t) => t.name === active) || null, [list, active]);
+
+  // when template changes, refresh totalSteps from template meta/length
+  React.useEffect(() => {
+    if (!tpl) return;
+    const len = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
+    const ts = typeof tpl.total_steps === "number" ? tpl.total_steps : len;
+    setTotalSteps(Math.max(1, Math.min(len || 1, ts || 1)));
+  }, [tpl]);
+
   const updateStep = (idx, patch) => {
     setList((prev) => prev.map((t) => t.name !== active ? t : ({ ...t, steps: t.steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)) })));
   };
@@ -417,8 +483,8 @@ function Templates() {
     if (!tpl) return;
     const payload = {
       sequence_id: active,
-      total_steps: (tpl.steps || []).length,
-      steps: (tpl.steps || []).map((s) => ({
+      total_steps: totalSteps, // use UI value
+      steps: (tpl.steps || []).slice(0, totalSteps).map((s) => ({
         step: s.step || "", subject: s.subject || "", body_html: s.body_html || "", delay_days: Number(s.delay_days || 0),
       }))
     };
@@ -452,8 +518,16 @@ function Templates() {
   const setUpdateSubjectRef = (el, updater) => { if (el) { el._updateSubject = updater; } };
   const setUpdateBodyRef = (el, updater) => { if (el) { el._updateBody = updater; } };
 
+  // computed list of steps to show (first N)
+  const visibleSteps = useMemo(() => {
+    const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
+    const n = Math.max(0, Math.min(arr.length, Number(totalSteps || 0)));
+    return arr.slice(0, n || arr.length);
+  }, [tpl, totalSteps]);
+
   return (<section className="grid gap">
     {err && <div className="error">{err}</div>}
+
     <div className="row gap">
       <select value={active} onChange={(e) => setActive(e.target.value)}>
         {list.map((t) => (<option key={t.name} value={t.name}>{t.name}</option>))}
@@ -462,6 +536,7 @@ function Templates() {
       <TextButton onClick={() => setShowSig(s => !s)}>{showSig ? "Signatur ausblenden" : "Signatur"}</TextButton>
     </div>
 
+    {/* global signature editor */}
     {showSig && (
       <div className="card">
         <Field label="Signatur (HTML)">
@@ -477,33 +552,60 @@ function Templates() {
       </div>
     )}
 
-    {tpl ? (<div className="grid gap">
-      {(tpl.steps || []).map((s, i) => (<div key={i} className="card">
-        <div className="strong">{s.step}</div>
-        <Field label="Betreff">
-          <input
-            value={s.subject || ""}
-            data-kind="subject"
-            onFocus={(e) => setCursorTarget(e.target)}
-            ref={(el) => { setUpdateSubjectRef(el, (v) => updateStep(i, { subject: v })); }}
-            onChange={(e) => updateStep(i, { subject: e.target.value })}
-          />
-        </Field>
-        <Field label="Body (HTML)">
-          <textarea
-            rows="8"
-            value={s.body_html || ""}
-            data-kind="body"
-            onFocus={(e) => setCursorTarget(e.target)}
-            ref={(el) => { setUpdateBodyRef(el, (v) => updateStep(i, { body_html: v })); }}
-            onChange={(e) => updateStep(i, { body_html: e.target.value })}
-          />
-        </Field>
-        <div className="row gap wrap">
-          {fields.map((f) => (<TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>{f.label}</TextButton>))}
+    {/* total_steps controller */}
+    {tpl && (
+      <div className="card">
+        <div className="row gap">
+          <Field label="Total Steps">
+            <input
+              type="number"
+              min="1"
+              max={(tpl.steps || []).length || 1}
+              value={totalSteps}
+              onChange={(e) => {
+                const max = (tpl.steps || []).length || 1;
+                const v = Math.max(1, Math.min(max, Number(e.target.value || 1)));
+                setTotalSteps(v);
+              }}
+            />
+          </Field>
+          <div className="muted" style={{alignSelf:'end'}}>von {(tpl.steps || []).length}</div>
         </div>
-        <Field label="Verzögerung (Tage)"><input type="number" value={s.delay_days || 0} onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })} /></Field>
-      </div>))}
+      </div>
+    )}
+
+    {tpl ? (<div className="grid gap">
+      {visibleSteps.map((s, i) => {
+        const stepIndex = i + 1; // 1-based in UI
+        return (
+          <div key={i} className="card">
+            <div className="strong">{`Step ${stepIndex}`}</div>
+            <Field label="Betreff">
+              <input
+                value={s.subject || ""}
+                data-kind="subject"
+                onFocus={(e) => setCursorTarget(e.target)}
+                ref={(el) => { setUpdateSubjectRef(el, (v) => updateStep(i, { subject: v })); }}
+                onChange={(e) => updateStep(i, { subject: e.target.value })}
+              />
+            </Field>
+            <Field label="Body (HTML)">
+              <textarea
+                rows="8"
+                value={s.body_html || ""}
+                data-kind="body"
+                onFocus={(e) => setCursorTarget(e.target)}
+                ref={(el) => { setUpdateBodyRef(el, (v) => updateStep(i, { body_html: v })); }}
+                onChange={(e) => updateStep(i, { body_html: e.target.value })}
+              />
+            </Field>
+            <div className="row gap wrap">
+              {fields.map((f) => (<TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>{f.label}</TextButton>))}
+            </div>
+            <Field label="Verzögerung (Tage)"><input type="number" value={s.delay_days || 0} onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })} /></Field>
+          </div>
+        );
+      })}
       <div className="row end">
         <PrimaryButton onClick={save}>Template(s) speichern</PrimaryButton>
       </div>
