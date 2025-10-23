@@ -31,15 +31,15 @@
   <div id="root" class="container"></div>
 
   <!-- WICHTIG: Base-URL für alle API-Aufrufe -->
-  <script>
-    window.App = {
-      API_BASE: "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec"
-    };
-  </script>
+ <script>
+  window.App = window.App || {};
+  window.App.API_BASE = "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
+</script>
 
-  <!-- Modulare App-Dateien (Reihenfolge beibehalten) -->
-  <script src="app.boot.js"></script>
-  <script src="app.state.js"></script>
+<script src="app.boot.js"></script>
+<script src="app.state.js"></script>
+...
+
 
   <script src="app.components.templates.js"></script>
   <script src="app.components.signatures.js"></script>
