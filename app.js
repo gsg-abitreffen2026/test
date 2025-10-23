@@ -845,3 +845,17 @@ function Kontakte() {
     </Section>
   </section>);
 }
+// --- mount App ---
+(function () {
+  var root = document.getElementById('root');
+  if (!root) {
+    console.error('No #root element found. Add <div id="root"></div> to your HTML.');
+    return;
+  }
+  try {
+    ReactDOM.createRoot(root).render(React.createElement(App));
+    console.log('[app] mounted');
+  } catch (e) {
+    console.error('Mount error:', e);
+  }
+})();
