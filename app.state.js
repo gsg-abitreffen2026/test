@@ -41,12 +41,18 @@ window.App = window.App || {};
   App.DataProvider = DataProvider;
 
   // --- Mount helper ---
-  App.mount = function(Component){
-    const root = document.getElementById('root');
-    const tree = React.createElement(App.UserProvider, null,
-                  React.createElement(App.DataProvider, null,
-                    React.createElement(Component)));
-    ReactDOM.createRoot(root).render(tree);
-  };
+ // app.state.js – Mount helper (Singleton-Root)
+App.mount = function(Component){
+  const el = document.getElementById('root');
+
+  // Singleton-Root
+  if (!App.__root) {
+    App.__root = ReactDOM.createRoot(el);
+  }
+  const tree = React.createElement(App.UserProvider, null,
+                React.createElement(App.DataProvider, null,
+                  React.createElement(Component)));
+  App.__root.render(tree);
+};
 
 })(window.App);
