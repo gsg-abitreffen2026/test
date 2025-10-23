@@ -1,4 +1,4 @@
-// ===== avus smart-cap Dashboard (updated: total_steps UI + robust signature load) =====
+// ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
 const {
   useState,
   useEffect,
@@ -8,36 +8,59 @@ const {
   Fragment,
 } = React;
 
+/** =====================
+ *  CONFIG / API PATHS
+ *  ===================== */
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
 const API = {
+  // LOCAL
   contacts: (limit, includeInactive = true) =>
     `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(
       limit || 50
     )}&includeInactive=${includeInactive ? 1 : 0}`,
   stats: () => `${API_BASE}?path=api/stats`,
-  inbox: () => `${API_BASE}?path=api/review-inbox`,
-  todos: (limit) =>
-    `${API_BASE}?path=api/sent-todos&limit=${encodeURIComponent(limit || 25)}`,
   templates: () => `${API_BASE}?path=api/templates`,
-  blacklist: (q, includeBounces) =>
+  saveTemplate: (sequenceId) =>
+    `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
+  setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
+  signatures: () => `${API_BASE}?path=api/signatures`,
+  saveSignature: () => `${API_BASE}?path=api/signatures/save`,
+  setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
+  signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
+
+  blacklistLocal: (q, includeBounces) =>
     `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(
       q || ""
     )}&bounces=${includeBounces ? 1 : 0}`,
+
   toggleActive: () => `${API_BASE}?path=api/contacts/active`,
-  saveTemplate: (sequenceId) =>
-    `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
-  addBlacklist: () => `${API_BASE}?path=api/blacklist`,
+  setTodo: () => `${API_BASE}?path=api/contacts/todo`,
+  removeContact: () => `${API_BASE}?path=api/contacts/remove`,
+
   upload: () => `${API_BASE}?path=api/upload`,
   prepareCampaign: () => `${API_BASE}?path=api/campaign/prepare`,
   startCampaign: () => `${API_BASE}?path=api/campaign/start`,
   stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
 
-  settings: () => `${API_BASE}?path=api/settings`,
-  saveSettings: () => `${API_BASE}?path=api/settings/save`,
+  // GLOBAL
+  global: {
+    templates: () => `${API_BASE}?path=api/global/templates`,
+    saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
+    setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
 
-  removeContact: () => `${API_BASE}?path=api/contacts/remove`,
+    signatures: () => `${API_BASE}?path=api/global/signatures`,
+    saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
+    setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
+
+    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+    addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
+
+    errorsList: () => `${API_BASE}?path=api/global/error_list`,
+    errorsAdd: () => `${API_BASE}?path=api/global/error_list/add`,
+    errorsDelete: () => `${API_BASE}?path=api/global/error_list/delete`,
+  },
 };
 
 async function httpGet(url) {
@@ -57,14 +80,14 @@ async function httpPost(url, body) {
   try { return JSON.parse(text); } catch { return { text }; }
 }
 
+/** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
-function normalizePhone(x) { return String(x || "").replace(/[^\d+]/g, ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
-function toTF(v){ return v ? "TRUE" : "FALSE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
 
+/** ============ CSV/PDF parsing ============ */
 function detectDelimiter(headerLine) {
   const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
   const candidates = [
@@ -77,14 +100,14 @@ function detectDelimiter(headerLine) {
 }
 function normalizeKey(k) {
   const s = String(k || "").toLowerCase().replace(/\s+/g, "").replace(/[-_]/g, "");
-  if (/^(email|e?mail|e\-?mail|mailadresse)$/.test(s)) return "email";
+  if (/^(email|e?mail|mailadresse)$/.test(s)) return "email";
   if (/^(lastname|nachname|name$)$/.test(s)) return "lastName";
   if (/^(firstname|vorname)$/.test(s)) return "firstName";
   if (/^(company|firma|unternehmen|organisation)$/.test(s)) return "company";
   if (/^(position|titel|rolle)$/.test(s)) return "position";
   if (/^(phone|telefon|telefonnummer|tel)$/.test(s)) return "phone";
   if (/^(mobile|handy|mobil)$/.test(s)) return "mobile";
-  if (/^(anrede|salutation|gruess|grussformel)$/.test(s)) return "salutation";
+  if (/^(anrede|salutation|gruß|gruss|grussformel)$/.test(s)) return "Anrede";
   return k;
 }
 function splitCSV(line, delim) {
@@ -118,7 +141,7 @@ async function parseCSV(file) {
         email: email, lastName: last, company: comp,
         firstName: rec.firstName || "", position: rec.position || "",
         phone: rec.phone || "", mobile: rec.mobile || "",
-        salutation: rec.salutation || "",
+        Anrede: rec.Anrede || "",
       });
     }
   }
@@ -164,7 +187,7 @@ async function parsePDF(file) {
       buckets[key].push(it.str);
     }
     const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
-    return { company: join(buckets.firma), salutation: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
+    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
   }
   const collected = [];
   for (let p = 1; p <= pdf.numPages; p++) {
@@ -178,7 +201,7 @@ async function parsePDF(file) {
       const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
       const minimal = rec.company && rec.last;
       if (hasEmail || minimal) {
-        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", salutation: rec.salutation || "" });
+        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
       }
     }
   }
@@ -190,7 +213,7 @@ async function parsePDF(file) {
   return rows;
 }
 
-function Badge({ children, tone = "muted" }) { return <span className={cn("badge", `badge-${tone}`)}>{children}</span>; }
+/** ============ UI helpers ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
   return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
 }
@@ -202,6 +225,7 @@ function Field({ label, children }) { return (<label className="field"><span>{la
 function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 
+/** ============ APP ============ */
 function App() {
   const [page, setPage] = React.useState("login");
   const [authed, setAuthed] = React.useState(false);
@@ -220,13 +244,22 @@ function App() {
       {!authed && page === "login" && (<Login user={user} setUser={setUser} pw={pw} setPw={setPw} onSubmit={doLogin} err={err} />)}
       {authed && page === "dashboard" && <Dashboard />}
       {authed && page === "templates" && <Templates />}
+      {authed && page === "signaturen" && <Signaturen />}
       {authed && page === "blacklist" && <Blacklist />}
+      {authed && page === "errors" && <ErrorList />}
       {authed && page === "kontakte" && <Kontakte />}
     </main>
   </div>);
 }
 function Header({ authed, onNav, onLogout, active }) {
-  const tabs = [{ key: "dashboard", label: "Dashboard" },{ key: "templates", label: "Templates" },{ key: "blacklist", label: "Blacklist" },{ key: "kontakte", label: "Kontakte" }];
+  const tabs = [
+    { key: "dashboard", label: "Dashboard" },
+    { key: "templates", label: "Templates" },
+    { key: "signaturen", label: "Signaturen" },
+    { key: "blacklist", label: "Blacklist" },
+    { key: "errors", label: "Fehlerliste" },
+    { key: "kontakte", label: "Kontakte" },
+  ];
   return (<header className="topbar">
     <div className="brand"><div className="logo">av</div><div><div className="brand-top">avus gastro</div><div className="brand-bottom">smart-cap Dashboard</div></div></div>
     {authed ? (<nav className="menu">{tabs.map((t) => (<button key={t.key} onClick={() => onNav(t.key)} className={cn("menu-btn", active === t.key && "active")}>{t.label}</button>))}<button onClick={onLogout} className="menu-btn">Logout</button></nav>) : (<div className="tag">pay easy — Bezahlen im Flow</div>)}
@@ -241,6 +274,10 @@ function Login({ user, setUser, pw, setPw, onSubmit, err }) {
   </form></section>);
 }
 
+/** ============ DASHBOARD ============ */
+
+
+/** ============ DASHBOARD ============ */
 function Dashboard() {
   const [stats, setStats] = React.useState({ sent: 0, replies: 0, hot: 0, needReview: 0, meetings: 0 });
   const [contacts, setContacts] = React.useState([]);
@@ -251,59 +288,23 @@ function Dashboard() {
   const [campaignRunning, setCampaignRunning] = React.useState(false);
   const [updates, setUpdates] = React.useState({});
   const [showInactive, setShowInactive] = React.useState(true);
-  const [tplList, setTplList] = React.useState([]);
-  const [selectedTpl, setSelectedTpl] = React.useState("");
+  const [todoUpdates, setTodoUpdates] = React.useState({});
 
   const loadAll = React.useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [s, c, tpls] = await Promise.all([
-        httpGet(API.stats()),
-        httpGet(API.contacts(limit, showInactive)),
-        httpGet(API.templates()),
-      ]);
+      const [s, c] = await Promise.all([httpGet(API.stats()), httpGet(API.contacts(limit, showInactive))]);
       setStats(s);
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
-      const filtered = arr.filter(r => String(r.opt_out).toUpperCase() !== "TRUE"); // hide opt-outs
-      setContacts(filtered);
-      const l = Array.isArray(tpls) ? tpls : [];
-      setTplList(l);
-      if (!selectedTpl && l.length) setSelectedTpl(l[0].name || "");
+      setContacts(arr);
     } catch (e) { setError(e.message || "Fehler beim Laden"); }
     finally { setLoading(false); }
-  }, [limit, showInactive, selectedTpl]);
+  }, [limit, showInactive]);
+
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
-  const pushTotalSteps = async (sequenceId, totalOverride) => {
-    try {
-      const tpl = (tplList || []).find(t => t.name === sequenceId) || null;
-      const total = (typeof totalOverride === "number" && totalOverride > 0)
-        ? totalOverride
-        : (tpl && Array.isArray(tpl.steps) ? tpl.steps.length : 0);
-      await httpPost(API.saveTemplate(sequenceId), { sequence_id: sequenceId, total_steps: total, set_total_on_step1: true });
-    } catch (e) { console.warn("pushTotalSteps failed:", e); }
-  };
-
-  const start = async () => {
-    setCampaignRunning(true);
-    try {
-      if (selectedTpl) await pushTotalSteps(selectedTpl);
-      await httpPost(API.startCampaign(), { sequence_id: selectedTpl });
-    }
-    catch (e) { setError(e.message); }
-  };
-  const stop = async () => {
-    setCampaignRunning(false);
-    try { await httpPost(API.stopCampaign(), {}); }
-    catch (e) { setError(e.message); }
-  };
-  const saveCampaignSettings = async () => {
-    try {
-      if (selectedTpl) await pushTotalSteps(selectedTpl);
-      await httpPost(API.prepareCampaign(), { sequence_id: selectedTpl, per_day: perDay });
-      alert("Kampagne vorbereitet.");
-    } catch (e) { alert(e.message || "Fehler"); }
-  };
+  const start = async () => { setCampaignRunning(true); try { await httpPost(API.startCampaign(), {}); } catch (e) { setError(e.message); } };
+  const stop = async () => { setCampaignRunning(false); try { await httpPost(API.stopCampaign(), {}); } catch (e) { setError(e.message); } };
 
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
@@ -311,44 +312,47 @@ function Dashboard() {
     setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
     setUpdates((prev) => ({ ...prev, [key]: { active: newActive } }));
   };
+
   const saveActive = async () => {
     const payload = Object.entries(updates).map(([k, v]) => ({ id: k, email: k.includes("@") ? k : undefined, active: v.active }));
     if (!payload.length) return;
     try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); } catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
   };
 
-  const finishedTodos = React.useMemo(() => contacts.filter((r) => String(r.status) === "finished" && (r.last_sent_at || r.lastMailAt)), [contacts]);
-  const removeContact = async (r) => {
-    const key = (r.id || r.email || "").toString();
-    try { await httpPost(API.removeContact(), { id: r.id, email: r.email }); }
-    catch (e) { await httpPost(API.toggleActive(), { updates: [{ id: key, email: r.email, active: "FALSE" }] }); }
-    setContacts(prev => prev.filter(x => (x.id || x.email) !== key));
+  const markTodoDone = async (row) => {
+    const key = (row.id || row.email || "").toString();
+    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, todo: false } : r)));
+    setTodoUpdates((prev) => ({ ...prev, [key]: { todo: false } }));
   };
+
+  const saveTodos = async () => {
+    const payload = Object.entries(todoUpdates).map(([k, v]) => ({ id: k, email: k.includes("@") ? k : undefined, todo: v.todo }));
+    if (!payload.length) return;
+    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); } catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
+  };
+
+  const finishedTodos = React.useMemo(() => contacts.filter((r) => String(r.finished).toUpperCase() === "TRUE" && String(r.todo).toUpperCase() === "TRUE"), [contacts]);
 
   return (<section className="grid gap">
     {error && <div className="error">{error}</div>}
     <div className="grid cols-2 gap">
       <Section title="To-Dos (angeschrieben)">
         <ul className="list">
-          {finishedTodos.map((r) => (<li key={r.id || r.email} className="row">
-            <div className="grow"><div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
-              <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div></div>
-            {(r.phone || r.mobile) && (<a className="btn link" href={`tel:${String(r.phone || r.mobile).replace(/\s+/g, "")}`}>Anrufen</a>)}
-            <button className="btn danger" onClick={() => removeContact(r)} title="Kontakt entfernen">Entfernen</button>
+          {finishedTodos.map((r) => (<li key={r.id || r.email} className="row between vcenter">
+            <div className="grow">
+              <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
+              <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div>
+            </div>
+            <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
           </li>))}
         </ul>
+        <div className="row end"><PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>Änderungen speichern</PrimaryButton></div>
       </Section>
 
       <Section title="Kampagneneinstellungen">
         <div className="grid gap">
           <Field label="Sendouts pro Tag"><input type="number" min="0" value={perDay} onChange={(e) => setPerDay(Number(e.target.value || 0))} /></Field>
-          <Field label="Template-Auswahl">
-            <select value={selectedTpl} onChange={(e) => setSelectedTpl(e.target.value)}>
-              {tplList.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
-            </select>
-          </Field>
           <div className="row gap">
-            <PrimaryButton onClick={saveCampaignSettings}>Einstellungen speichern</PrimaryButton>
             <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
             <TextButton onClick={stop} disabled={!campaignRunning}>Stoppen</TextButton>
             <TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>
@@ -361,8 +365,8 @@ function Dashboard() {
       <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
       <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
       <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
-      <section className="card kpi"><div className="muted">Need Review</div><div className="kpi-num">{stats.needReview}</div></section>
-      <section className="card kpi"><div className="muted">Meetings</div><div className="kpi-num">{stats.meetings}</div></section>
+      <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
+      <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
     </div>
 
     <Section title="Kontakte" right={<div className="row gap">
@@ -397,78 +401,42 @@ function Dashboard() {
   </section>);
 }
 
+
+/** ============ TEMPLATES (local/global archive) ============ */
 function Templates() {
-  const [list, setList] = React.useState([]);
-  const [active, setActive] = React.useState("");
+  const [scope, setScope] = React.useState("local"); // local | global
+  const [localList, setLocalList] = React.useState([]);
+  const [globalList, setGlobalList] = React.useState([]);
+  const [activeName, setActiveName] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState("");
   const [cursorTarget, setCursorTarget] = React.useState(null);
-  const [signature, setSignature] = React.useState("");
-  const [showSig, setShowSig] = React.useState(false);
-  const [totalSteps, setTotalSteps] = React.useState(0); // NEW: UI-driven total steps
-
-  // best-effort extraction of signature from "settings" tab row 2, column "Signatur"
-  function extractSignature(settings) {
-    if (!settings) return "";
-    // direct fields
-    if (settings.Signatur) return settings.Signatur;
-    if (settings.signature_html) return settings.signature_html;
-    if (settings.signature) return settings.signature;
-
-    // array of rows or objects
-    if (Array.isArray(settings)) {
-      // try to find an entry that references the 'settings' tab (sheet) and row 2
-      let hit = settings.find(
-        (r, idx) =>
-          (String(r.tab || r.sheet || "").toLowerCase() === "settings" ||
-           String(r.name || "").toLowerCase() === "settings") &&
-          (r.row === 2 || r.r === 2 || idx === 1)
-      );
-      if (hit) return hit.Signatur || hit.signature || hit.signature_html || "";
-      // fallback: second element's Signatur
-      const second = settings[1];
-      if (second) return second.Signatur || second.signature || second.signature_html || "";
-    }
-
-    // nested objects
-    if (settings.settings) {
-      const s = settings.settings;
-      if (Array.isArray(s)) {
-        const second = s[1];
-        if (second) return second.Signatur || second.signature || second.signature_html || "";
-      } else if (typeof s === "object") {
-        return s.Signatur || s.signature || s.signature_html || "";
-      }
-    }
-    return "";
-  }
+  const [totalSteps, setTotalSteps] = React.useState(0);
 
   const load = React.useCallback(async () => {
     setLoading(true); setErr("");
     try {
-      const [res, settings] = await Promise.all([ httpGet(API.templates()), httpGet(API.settings()).catch(() => ({})) ]);
-      const arr = Array.isArray(res) ? res : [];
-      setList(arr);
-      const firstName = arr && arr[0] && arr[0].name ? arr[0].name : "";
-      setActive(firstName);
-      const sig = extractSignature(settings);
-      setSignature(sig || "");
-      // init total steps from first template if any
-      if (arr.length && Array.isArray(arr[0].steps)) {
-        const ts = typeof arr[0].total_steps === "number" ? arr[0].total_steps : arr[0].steps.length;
-        setTotalSteps(Math.max(1, Math.min(arr[0].steps.length, ts)));
-      } else {
-        setTotalSteps(0);
-      }
-    }
-    catch (e) { setErr(e.message || "Fehler"); }
+      const [loc, glob] = await Promise.all([ httpGet(API.templates()), httpGet(API.global.templates()) ]);
+      const a = Array.isArray(loc) ? loc : [];
+      const b = Array.isArray(glob) ? glob : [];
+      setLocalList(a); setGlobalList(b);
+      const first = (scope === "local" ? a : b);
+      setActiveName(first[0]?.name || "");
+      const steps = first[0]?.steps || [];
+      const ts = typeof first[0]?.total_steps === "number" ? first[0].total_steps : steps.length;
+      setTotalSteps(Math.max(1, Math.min(steps.length || 1, ts || 1)));
+    } catch (e) { setErr(e.message || "Fehler"); }
     finally { setLoading(false); }
-  }, []);
+  }, [scope]);
   React.useEffect(() => { load(); }, [load]);
 
-  const tpl = React.useMemo(() => list.find((t) => t.name === active) || null, [list, active]);
+  const list = scope === "local" ? localList : globalList;
+  const setListByScope = (fn) => {
+    if (scope === "local") setLocalList(fn);
+    else setGlobalList(fn);
+  };
+  const tpl = React.useMemo(() => list.find((t) => t.name === activeName) || null, [list, activeName]);
 
-  // when template changes, refresh totalSteps from template meta/length
   React.useEffect(() => {
     if (!tpl) return;
     const len = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
@@ -477,23 +445,30 @@ function Templates() {
   }, [tpl]);
 
   const updateStep = (idx, patch) => {
-    setList((prev) => prev.map((t) => t.name !== active ? t : ({ ...t, steps: t.steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)) })));
+    setListByScope(prev => prev.map(t => t.name !== activeName ? t : ({ ...t, steps: t.steps.map((s,i)=> i===idx ? { ...s, ...patch } : s ) })));
   };
   const save = async () => {
     if (!tpl) return;
     const payload = {
-      sequence_id: active,
-      total_steps: totalSteps, // use UI value
+      sequence_id: activeName,
+      total_steps: totalSteps,
       steps: (tpl.steps || []).slice(0, totalSteps).map((s) => ({
         step: s.step || "", subject: s.subject || "", body_html: s.body_html || "", delay_days: Number(s.delay_days || 0),
       }))
     };
-    try { await httpPost(API.saveTemplate(active), payload); alert("Template gespeichert"); }
-    catch (e) { alert(e.message || "Fehler"); }
+    try {
+      if (scope === "local") await httpPost(API.saveTemplate(activeName), payload);
+      else await httpPost(API.global.saveTemplate(activeName), payload);
+      alert("Template gespeichert");
+    } catch (e) { alert(e.message || "Fehler"); }
   };
-  const saveSignatureOnly = async () => {
-    try { await httpPost(API.saveSettings(), { signature_html: signature }); alert("Signatur gespeichert"); }
-    catch (e) { alert(e.message || "Fehler beim Speichern der Signatur"); }
+  const createNew = () => {
+    const nm = prompt("Neuen Templatenamen eingeben:");
+    if (!nm) return;
+    const base = { name: nm, total_steps: 1, steps: [{ step: "1", subject: "", body_html: "", delay_days: 0 }] };
+    setListByScope(prev => [{ ...base }, ...prev]);
+    setActiveName(nm);
+    setTotalSteps(1);
   };
 
   const fields = [
@@ -514,11 +489,9 @@ function Templates() {
     else if (kind === "body") el._updateBody && el._updateBody(next);
     requestAnimationFrame(() => { el.focus(); const pos = start + token.length; el.setSelectionRange(pos, pos); });
   };
-
   const setUpdateSubjectRef = (el, updater) => { if (el) { el._updateSubject = updater; } };
   const setUpdateBodyRef = (el, updater) => { if (el) { el._updateBody = updater; } };
 
-  // computed list of steps to show (first N)
   const visibleSteps = useMemo(() => {
     const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
     const n = Math.max(0, Math.min(arr.length, Number(totalSteps || 0)));
@@ -528,31 +501,22 @@ function Templates() {
   return (<section className="grid gap">
     {err && <div className="error">{err}</div>}
 
-    <div className="row gap">
-      <select value={active} onChange={(e) => setActive(e.target.value)}>
-        {list.map((t) => (<option key={t.name} value={t.name}>{t.name}</option>))}
-      </select>
+    <div className="row gap wrap">
+      <Field label="Archiv">
+        <select value={scope} onChange={(e)=>{ setScope(e.target.value); }}>
+          <option value="local">Lokal</option>
+          <option value="global">Global</option>
+        </select>
+      </Field>
+      <Field label="Template">
+        <select value={activeName} onChange={(e)=> setActiveName(e.target.value)}>
+          {list.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+        </select>
+      </Field>
       <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
-      <TextButton onClick={() => setShowSig(s => !s)}>{showSig ? "Signatur ausblenden" : "Signatur"}</TextButton>
+      <PrimaryButton onClick={createNew}>Neues Template</PrimaryButton>
     </div>
 
-    {/* global signature editor */}
-    {showSig && (
-      <div className="card">
-        <Field label="Signatur (HTML)">
-          <textarea
-            rows="5"
-            value={signature}
-            onChange={(e) => setSignature(e.target.value)}
-          />
-        </Field>
-        <div className="row end">
-          <PrimaryButton onClick={saveSignatureOnly}>Signatur speichern</PrimaryButton>
-        </div>
-      </div>
-    )}
-
-    {/* total_steps controller */}
     {tpl && (
       <div className="card">
         <div className="row gap">
@@ -576,7 +540,7 @@ function Templates() {
 
     {tpl ? (<div className="grid gap">
       {visibleSteps.map((s, i) => {
-        const stepIndex = i + 1; // 1-based in UI
+        const stepIndex = i + 1;
         return (
           <div key={i} className="card">
             <div className="strong">{`Step ${stepIndex}`}</div>
@@ -607,19 +571,113 @@ function Templates() {
         );
       })}
       <div className="row end">
-        <PrimaryButton onClick={save}>Template(s) speichern</PrimaryButton>
+        <PrimaryButton onClick={save}>Template speichern</PrimaryButton>
       </div>
-    </div>) : (<div className="muted">Keine Templates geladen.</div>)}
+    </div>) : (<div className="muted">Kein Template gewählt.</div>)}
   </section>);
 }
 
+/** ============ SIGNATURES (local/global archive) ============ */
+function Signaturen() {
+  const [scope, setScope] = React.useState("local"); // local | global
+  const [local, setLocal] = React.useState({ list: [], standard: "" });
+  const [global, setGlobal] = React.useState({ list: [] });
+  const [active, setActive] = React.useState({ scope: "local", name: "standard" });
+  const [currentName, setCurrentName] = React.useState("standard");
+  const [html, setHtml] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    setLoading(true); setErr("");
+    try {
+      const [locList, std, globList] = await Promise.all([
+        httpGet(API.signatures()),
+        httpGet(API.signaturesStandard()).catch(()=>({ html:"" })),
+        httpGet(API.global.signatures())
+      ]);
+      setLocal({ list: Array.isArray(locList?.list) ? locList.list : (Array.isArray(locList) ? locList : []), standard: std?.html || std?.Signatur || "" });
+      setGlobal({ list: Array.isArray(globList?.list) ? globList.list : (Array.isArray(globList) ? globList : []) });
+      if (locList?.active) setActive(locList.active);
+      setCurrentName("standard");
+      setHtml(std?.html || std?.Signatur || "");
+    } catch (e) { setErr(e.message || "Fehler"); }
+    finally { setLoading(false); }
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+
+  const list = scope === "local" ? [{ name: "standard", html: local.standard, readonly: true }, ...(local.list||[])] : (global.list||[]);
+  const onPick = (name) => {
+    setCurrentName(name);
+    const found = list.find(x => x.name === name);
+    setHtml(found?.html || "");
+  };
+  const onSave = async () => {
+    if (currentName === "standard" && scope === "local") return alert("Standard-Signatur ist unveränderlich.");
+    try {
+      if (!currentName) return alert("Bitte Name vergeben.");
+      const body = { name: currentName, html };
+      if (scope === "local") await httpPost(API.saveSignature(), body);
+      else await httpPost(API.global.saveSignature(), body);
+      alert("Signatur gespeichert");
+      await load();
+    } catch (e) { alert(e.message || "Fehler"); }
+  };
+  const onCreate = () => {
+    const nm = prompt("Name für neue Signatur:");
+    if (!nm) return;
+    setScope("local"); // Default neu lokal
+    setCurrentName(nm);
+    setHtml("");
+  };
+  const onSetActive = async () => {
+    try {
+      await httpPost(scope === "local" ? API.setActiveSignature() : API.global.setActiveSignature(), { scope, name: currentName });
+      setActive({ scope, name: currentName });
+      alert("Aktive Signatur gesetzt");
+    } catch (e) { alert(e.message || "Fehler"); }
+  };
+
+  return (<section className="grid gap">
+    {err && <div className="error">{err}</div>}
+
+    <div className="row gap wrap">
+      <Field label="Archiv">
+        <select value={scope} onChange={(e)=> { setScope(e.target.value); setCurrentName(e.target.value==="local"?"standard":(global.list?.[0]?.name||"")); }}>
+          <option value="local">Lokal</option>
+          <option value="global">Global</option>
+        </select>
+      </Field>
+      <Field label="Signatur">
+        <select value={currentName} onChange={(e)=> onPick(e.target.value)}>
+          {list.map(s => <option key={s.name} value={s.name}>{s.name}{s.readonly?" (Standard)":""}</option>)}
+        </select>
+      </Field>
+      <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
+      <PrimaryButton onClick={onCreate}>Neue Signatur</PrimaryButton>
+    </div>
+
+    <div className="card">
+      <Field label="HTML">
+        <textarea rows="8" value={html} onChange={(e)=> setHtml(e.target.value)} disabled={scope==="local" && currentName==="standard"} />
+      </Field>
+      <div className="row gap">
+        <PrimaryButton onClick={onSave} disabled={scope==="local" && currentName==="standard"}>Speichern</PrimaryButton>
+        <TextButton onClick={onSetActive}>Als aktiv setzen</TextButton>
+        <div className="muted">Aktiv: {active.scope}/{active.name}</div>
+      </div>
+    </div>
+  </section>);
+}
+
+/** ============ BLACKLIST (GLOBAL) ============ */
 function Blacklist() {
   const [q, setQ] = React.useState(""); const [withBounces, setWithBounces] = React.useState(true);
   const [rows, setRows] = React.useState({ blacklist: [], bounces: [] }); const [newEmail, setNewEmail] = React.useState(""); const [err, setErr] = React.useState("");
-  const load = React.useCallback(async () => { setErr(""); try { const r = await httpGet(API.blacklist(q, withBounces)); setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] }); } catch (e) { setErr(e.message || "Fehler"); } }, [q, withBounces]);
+  const load = React.useCallback(async () => { setErr(""); try { const r = await httpGet(API.global.blacklist(q, withBounces)); setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] }); } catch (e) { setErr(e.message || "Fehler"); } }, [q, withBounces]);
   React.useEffect(() => { load(); }, [load]);
   const add = async () => { const email = (newEmail || "").trim(); if (!email || !isEmail(email)) return alert("Bitte gültige E-Mail");
-    try { await httpPost(API.addBlacklist(), { email }); setNewEmail(""); await load(); } catch (e) { alert(e.message || "Fehler"); } };
+    try { await httpPost(API.global.addBlacklist(), { email }); setNewEmail(""); await load(); } catch (e) { alert(e.message || "Fehler"); } };
   return (<section className="grid gap">
     {err && <div className="error">{err}</div>}
     <Toolbar>
@@ -641,11 +699,77 @@ function Blacklist() {
   </section>);
 }
 
+/** ============ ERROR LIST (GLOBAL PAGE) ============ */
+function ErrorList() {
+  const [rows, setRows] = React.useState([]);
+  const [sel, setSel] = React.useState({}); // id -> true
+  const [err, setErr] = React.useState("");
+
+  const load = React.useCallback(async () => {
+    setErr("");
+    try {
+      const r = await httpGet(API.global.errorsList());
+      setRows(Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []));
+    } catch (e) { setErr(e.message || "Fehler"); }
+  }, []);
+  React.useEffect(() => { load(); }, [load]);
+
+  const toggle = (id) => setSel(prev => ({ ...prev, [id]: !prev[id] }));
+  const removeSelected = async () => {
+    const ids = rows.filter(r => sel[r.id]).map(r => r.id);
+    if (!ids.length) return;
+    try {
+      await httpPost(API.global.errorsDelete(), { ids });
+      setSel({});
+      await load();
+    } catch (e) { alert(e.message || "Fehler beim Löschen"); }
+  };
+
+  const isBad = (row, key) => {
+    if (["email","Anrede","firstName","lastName","company"].includes(key)) return !row[key];
+    if (key === "phoneOrMobile") return !(row.phone || row.mobile);
+    return false;
+  };
+
+  return (<section className="grid gap">
+    {err && <div className="error">{err}</div>}
+    <Toolbar>
+      <TextButton onClick={load}>Neu laden</TextButton>
+      <PrimaryButton onClick={removeSelected}>Erledigt (löschen)</PrimaryButton>
+    </Toolbar>
+    <div className="table-wrap">
+      <table className="table small">
+        <thead>
+          <tr><th></th><th>email</th><th>Anrede</th><th>firstName</th><th>lastName</th><th>company</th><th>phone</th><th>mobile</th><th>reason</th></tr>
+        </thead>
+        <tbody>
+          {rows.map((r,i)=> (
+            <tr key={r.id || i}>
+              <td><input type="checkbox" checked={!!sel[r.id]} onChange={()=>toggle(r.id)} /></td>
+              <td className={isBad(r,"email")?"bad":""}>{r.email||""}</td>
+              <td className={isBad(r,"Anrede")?"bad":""}>{r.Anrede||""}</td>
+              <td className={isBad(r,"firstName")?"bad":""}>{r.firstName||""}</td>
+              <td className={isBad(r,"lastName")?"bad":""}>{r.lastName||""}</td>
+              <td className={isBad(r,"company")?"bad":""}>{r.company||""}</td>
+              <td className={isBad(r,"phoneOrMobile")?"bad":""}>{r.phone||""}</td>
+              <td className={isBad(r,"phoneOrMobile")?"bad":""}>{r.mobile||""}</td>
+              <td>{r.reason||r.error_code||""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+    <style>{`.bad{background:#ffe6e6;}`}</style>
+  </section>);
+}
+
+/** ============ KONTAKTE (upload + validation -> error_list) ============ */
 function Kontakte() {
   const [file, setFile] = React.useState(null);
   const [rows, setRows] = React.useState([]);
   const [mode, setMode] = React.useState("append");
   const [info, setInfo] = React.useState("");
+
   const onFile = async (e) => {
     const f = e.target.files && e.target.files[0];
     setFile(f || null); if (!f) return;
@@ -656,9 +780,47 @@ function Kontakte() {
       catch (err) { console.error(err); setRows([]); setInfo("PDF konnte nicht gelesen werden."); }
     } else { setRows([]); setInfo("Bitte CSV oder PDF verwenden"); }
   };
-  const upload = async () => { if (!rows.length) return alert("Keine gültigen Zeilen");
-    try { await httpPost(API.upload(), { rows, mode }); alert("Upload gesendet"); } catch (e) { alert(e.message || "Fehler beim Upload"); } };
+
+  const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
+  const phoneOk = (r) => !!(r.phone || r.mobile);
+
+  const upload = async () => {
+    if (!rows.length) return alert("Keine gültigen Zeilen");
+    let g = { blacklist: [], bounces: [] };
+    try { g = await httpGet(API.global.blacklist("", true)); } catch (e) {}
+
+    const errors = [];
+    const valid = [];
+    for (const r of rows) {
+      let reason = "";
+      if (!requiredOk(r)) reason = "MISSING_REQUIRED";
+      else if (!phoneOk(r)) reason = "MISSING_PHONE_OR_MOBILE";
+      else if ((g.blacklist||[]).includes(r.email)) reason = "BLACKLIST";
+      else if ((g.bounces||[]).includes(r.email)) reason = "BOUNCE";
+
+      if (reason) {
+        errors.push({
+          email: r.email, Anrede: r.Anrede, firstName: r.firstName, lastName: r.lastName, company: r.company,
+          phone: r.phone, mobile: r.mobile, reason,
+        });
+      } else {
+        valid.push(r);
+      }
+    }
+
+    try {
+      if (errors.length) await httpPost(API.global.errorsAdd(), { rows: errors });
+      if (valid.length) {
+        await httpPost(API.upload(), { rows: valid, mode });
+        alert(`Upload gesendet. OK: ${valid.length}${errors.length ? ` | Fehler: ${errors.length} (in Fehlerliste)` : ""}`);
+      } else {
+        alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste geschrieben.`);
+      }
+    } catch (e) { alert(e.message || "Fehler beim Upload"); }
+  };
+
   const prepare = async () => { try { await httpPost(API.prepareCampaign(), {}); alert("Vorbereitung ausgelöst"); } catch (e) { alert(e.message || "Fehler bei Vorbereitung"); } };
+
   return (<section className="grid gap">
     <Section title="Kontaktliste importieren">
       <div className="row gap wrap">
@@ -674,14 +836,12 @@ function Kontakte() {
       {rows.length > 0 && (<div className="table-wrap">
         <table className="table small">
           <thead><tr>
-            <th>email</th><th>lastName</th><th>company</th><th>firstName</th><th>salutation</th><th>position</th><th>phone</th><th>mobile</th>
+            <th>email</th><th>Anrede</th><th>firstName</th><th>lastName</th><th>company</th><th>position</th><th>phone</th><th>mobile</th>
           </tr></thead>
           <tbody>{rows.slice(0, 15).map((r, i) => (<tr key={i}>
-            <td>{r.email}</td><td>{r.lastName}</td><td>{r.company}</td><td>{r.firstName}</td><td>{r.salutation || ""}</td><td>{r.position}</td><td>{r.phone}</td><td>{r.mobile || ""}</td>
+            <td>{r.email}</td><td>{r.Anrede||""}</td><td>{r.firstName}</td><td>{r.lastName}</td><td>{r.company}</td><td>{r.position||""}</td><td>{r.phone||""}</td><td>{r.mobile||""}</td>
           </tr>))}</tbody>
         </table><div className="muted">Vorschau: {rows.length} Zeilen (erste 15)</div></div>)}
     </Section>
   </section>);
 }
-
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
