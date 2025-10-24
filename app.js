@@ -66,27 +66,55 @@ const API = {
   },
 };
 
+// ---- robust HTTP (POST-only) mit Retry & Backoff ----
+async function fetchWithRetry(url, options = {}, tries = 5) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, { redirect: 'manual', ...options });
+      // 3xx-Weiterleitungen als Fehler behandeln (z.B. Login-Redirect)
+      if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+        throw new Error(`HTTP ${res.status} redirect for ${url}`);
+      }
+      if (res.status === 429 || res.status === 503) {
+        // kurz warten und nochmal probieren
+        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
+        await sleep(wait);
+        continue;
+      }
+      if (!res.ok) {
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0,120)}`);
+      }
+      const txt = await res.text();
+      try { return JSON.parse(txt); } catch { return { text: txt }; }
+    } catch (err) {
+      lastErr = err;
+      // Netzfehler -> kurzer Retry
+      const wait = 150 * (i + 1);
+      await sleep(wait);
+    }
+  }
+  throw lastErr || new Error(`Request failed: ${url}`);
+}
+
 async function httpGet(url) {
-  // POST-only transport (CORS-safe) – wir POSTen auch Reads
-  const res = await fetch(url, {
+  // Wir POSTen auch Reads (kein Preflight; Server erwartet text/plain)
+  return fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "", // kein Preflight
+    body: ""
   });
-  if (!res.ok) throw new Error(`GET ${url} -> ${res.status}`);
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return { text }; }
 }
+
 async function httpPost(url, body) {
-  const res = await fetch(url, {
+  return fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(body || {}),
+    body: JSON.stringify(body || {})
   });
-  if (!res.ok) throw new Error(`POST ${url} -> ${res.status}`);
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return { text }; }
 }
+
 
 /** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
@@ -756,38 +784,49 @@ function Templates() {
 /* ==== PART 4 ==== */
 /** ============ SIGNATURES (local/global archive) ============ */
 function Signaturen() {
-  const [scope, setScope] = React.useState("local"); // 'local' | 'global'
-  const [local, setLocal]   = React.useState({ list: [], standard: "" });
+  const [scope, setScope] = React.useState("local"); // local | global
+  const [local, setLocal] = React.useState({ list: [], standard: "" });
   const [global, setGlobal] = React.useState({ list: [] });
-
   const [active, setActive] = React.useState({ scope: "local", name: "standard" });
   const [currentName, setCurrentName] = React.useState("standard");
   const [html, setHtml] = React.useState("");
+  const [loading, setLoading] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [creating, setCreating] = React.useState(false);
 
-  const [creating, setCreating] = React.useState(false); // ★ Erstellmodus
-  const [newName, setNewName]   = React.useState("");    // ★ Namensfeld
-  const [loading, setLoading]   = React.useState(false);
-  const [err, setErr]           = React.useState("");
+  const loadingRef = React.useRef(false);
+  const tokenRef = React.useRef(0);
 
   const load = React.useCallback(async () => {
-    setLoading(true); setErr("");
+    if (loadingRef.current) return;
+    loadingRef.current = true;
+    const myToken = ++tokenRef.current;
+    setLoading(true);
+    setErr("");
     try {
-      const [locList, std, globList] = await Promise.all([
-        httpGet(API.signatures()),
-        httpGet(API.signaturesStandard()).catch(()=>({ html:"" })),
-        httpGet(API.global.signatures())
-      ]);
+      const locList = await httpGet(API.signatures());
+      const std = await httpGet(API.signaturesStandard()).catch(() => ({ html: "" }));
+      const globList = await httpGet(API.global.signatures());
 
-      const locArr = Array.isArray(locList?.list) ? locList.list : (Array.isArray(locList) ? locList : []);
+      if (myToken !== tokenRef.current) return;
+
+      const locArr = Array.isArray(locList?.list)
+        ? locList.list
+        : Array.isArray(locList)
+        ? locList
+        : [];
       const stdHtml = std?.html || std?.Signatur || "";
-      const globArr = Array.isArray(globList?.list) ? globList.list : (Array.isArray(globList) ? globList : []);
+      const globArr = Array.isArray(globList?.list)
+        ? globList.list
+        : Array.isArray(globList)
+        ? globList
+        : [];
 
       setLocal({ list: locArr, standard: stdHtml });
       setGlobal({ list: globArr });
 
       if (locList?.active) setActive(locList.active);
 
-      // Standard-Auswahl initial
       setCreating(false);
       if (scope === "local") {
         setCurrentName("standard");
@@ -795,90 +834,65 @@ function Signaturen() {
       } else {
         const first = globArr[0]?.name || "";
         setCurrentName(first);
-        setHtml(globArr.find(x=>x.name===first)?.html || "");
+        setHtml(globArr.find((x) => x.name === first)?.html || "");
       }
     } catch (e) {
       setErr(e.message || "Fehler");
     } finally {
-      setLoading(false);
+      if (myToken === tokenRef.current) {
+        setLoading(false);
+        loadingRef.current = false;
+      }
     }
   }, [scope]);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
-  // Liste gemäß Scope (für Dropdown)
-  const list = React.useMemo(() => {
-    return scope === "local"
-      ? [{ name: "standard", html: local.standard, readonly: true }, ...(local.list||[])]
-      : (global.list||[]);
-  }, [scope, local, global]);
+  const list =
+    scope === "local"
+      ? [{ name: "standard", html: local.standard, readonly: true }, ...(local.list || [])]
+      : global.list || [];
 
-  // Auswahl ändern (nur wenn nicht im Erstell-Modus)
   const onPick = (name) => {
+    setCreating(false);
     setCurrentName(name);
-    if (creating) return; // im Erstellmodus HTML nicht überschreiben
-    const found = list.find(x => x.name === name);
+    const found = list.find((x) => x.name === name);
     setHtml(found?.html || "");
   };
 
-  // ★ Erstellen: respektiert aktuellen Scope, KEIN scope-Flip
-  const onCreateStart = () => {
-    setCreating(true);
-    setNewName("");
-    setCurrentName(""); // im UI ist jetzt das Namensfeld maßgeblich
-    setHtml("");
-  };
-
-  const onCreateCancel = () => {
-    setCreating(false);
-    // zur letzten sinnvollen Auswahl zurück:
-    if (scope === "local") {
-      setCurrentName("standard");
-      setHtml(local.standard || "");
-    } else {
-      const first = global.list?.[0]?.name || "";
-      setCurrentName(first);
-      setHtml(global.list?.find(x=>x.name===first)?.html || "");
-    }
-  };
-
-  // ★ Speichern: berücksichtigt Erstell-Modus + Scope, Standard lokal bleibt read-only
   const onSave = async () => {
+    if (scope === "local" && currentName === "standard")
+      return alert("Standard-Signatur ist unveränderlich.");
+    if (!currentName) return alert("Bitte Name vergeben.");
     try {
-      if (creating) {
-        const nm = (newName || "").trim();
-        if (!nm) return alert("Bitte Namen für die neue Signatur eingeben.");
-        const body = { name: nm, html };
-        if (scope === "local") await httpPost(API.saveSignature(), body);
-        else await httpPost(API.global.saveSignature(), body);
-        setCreating(false);
-        await load();
-        setCurrentName(nm);
-      } else {
-        if (scope === "local" && currentName === "standard") {
-          return alert("Standard-Signatur ist unveränderlich.");
-        }
-        if (!currentName) return alert("Bitte Signaturname wählen.");
-        const body = { name: currentName, html };
-        if (scope === "local") await httpPost(API.saveSignature(), body);
-        else await httpPost(API.global.saveSignature(), body);
-        await load();
-      }
+      const body = { name: currentName, html };
+      if (scope === "local") await httpPost(API.saveSignature(), body);
+      else await httpPost(API.global.saveSignature(), body);
       alert("Signatur gespeichert");
+      setCreating(false);
+      await load();
     } catch (e) {
-      alert(e.message || "Fehler");
+      alert(e.message || "Fehler beim Speichern");
     }
+  };
+
+  const onCreate = () => {
+    setCreating(true);
+    setHtml("");
+    setCurrentName("");
   };
 
   const onSetActive = async () => {
     try {
-      const nameToSet = creating ? (newName || "").trim() : currentName;
-      if (!nameToSet) return alert("Bitte Signaturname wählen/angeben.");
       await httpPost(
-        scope === "local" ? API.setActiveSignature() : API.global.setActiveSignature(),
-        { scope, name: nameToSet }
+        scope === "local"
+          ? API.setActiveSignature()
+          : API.global.setActiveSignature(),
+        { scope, name: currentName }
       );
-      setActive({ scope, name: nameToSet });
+      setActive({ scope, name: currentName });
       alert("Aktive Signatur gesetzt");
     } catch (e) {
       alert(e.message || "Fehler");
@@ -893,10 +907,13 @@ function Signaturen() {
         <Field label="Archiv">
           <select
             value={scope}
-            onChange={(e)=> {
-              // Beim Wechsel Erstellmodus verlassen, Auswahl neu initialisieren
-              setScope(e.target.value);
+            onChange={(e) => {
+              const sc = e.target.value;
+              setScope(sc);
               setCreating(false);
+              setCurrentName(
+                sc === "local" ? "standard" : global.list?.[0]?.name || ""
+              );
             }}
           >
             <option value="local">Lokal</option>
@@ -904,59 +921,64 @@ function Signaturen() {
           </select>
         </Field>
 
-        {/* Wenn NICHT im Erstellmodus: Auswahl vorhandener Signaturen */}
-        {!creating && (
-          <Field label="Signatur">
-            <select value={currentName} onChange={(e)=> onPick(e.target.value)}>
-              {list.map(s => (
-                <option key={s.name} value={s.name}>
-                  {s.name}{s.readonly ? " (Standard)" : ""}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
+        <Field label="Signatur">
+          <select
+            value={currentName}
+            onChange={(e) => onPick(e.target.value)}
+            disabled={creating}
+          >
+            {list.map((s) => (
+              <option key={s.name} value={s.name}>
+                {s.name}
+                {s.readonly ? " (Standard)" : ""}
+              </option>
+            ))}
+          </select>
+        </Field>
 
-        {/* Wenn im Erstellmodus: Namensfeld anzeigen */}
+        <TextButton onClick={load} disabled={loading}>
+          Neu laden
+        </TextButton>
+        <PrimaryButton onClick={onCreate}>Neue Signatur</PrimaryButton>
+      </div>
+
+      <div className="card">
         {creating && (
-          <Field label="Name (neu)">
+          <Field label="Name">
             <input
-              value={newName}
-              onChange={(e)=> setNewName(e.target.value)}
-              placeholder="z. B. 'Sales – kurz'"
+              placeholder="Name der Signatur"
+              value={currentName}
+              onChange={(e) => setCurrentName(e.target.value)}
             />
           </Field>
         )}
 
-        <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
-        {!creating
-          ? <PrimaryButton onClick={onCreateStart}>Neue Signatur</PrimaryButton>
-          : <TextButton onClick={onCreateCancel}>Abbrechen</TextButton>}
-      </div>
-
-      <div className="card">
         <Field label="HTML">
           <textarea
             rows="8"
             value={html}
-            onChange={(e)=> setHtml(e.target.value)}
-            disabled={!creating && scope==="local" && currentName==="standard"}
+            onChange={(e) => setHtml(e.target.value)}
+            disabled={scope === "local" && currentName === "standard"}
           />
         </Field>
+
         <div className="row gap">
           <PrimaryButton
             onClick={onSave}
-            disabled={!creating && scope==="local" && currentName==="standard"}
+            disabled={scope === "local" && currentName === "standard"}
           >
             Speichern
           </PrimaryButton>
           <TextButton onClick={onSetActive}>Als aktiv setzen</TextButton>
-          <div className="muted">Aktiv: {active.scope}/{active.name}</div>
+          <div className="muted">
+            Aktiv: {active.scope}/{active.name}
+          </div>
         </div>
       </div>
     </section>
   );
 }
+
 /* ==== END PART 4 ==== */
 /* ==== PART 5 ==== */
 /** ============ BLACKLIST (GLOBAL) ============ */
