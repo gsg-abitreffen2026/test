@@ -77,15 +77,15 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
   }
   throw lastErr || new Error(`Request failed: ${url}`);
 }
-
+// httpGet: wieder echter GET (keine Header, kein Body, kein Preflight)
 async function httpGet(url) {
-  // Wir POSTen auch Reads (kein Preflight; Server erwartet text/plain)
   return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "",
+    method: "GET",
+    // optional: cache ausschalten, damit Sheets-Änderungen sofort sichtbar sind
+    cache: "no-store",
   });
 }
+
 async function httpPost(url, body) {
   return fetchWithRetry(url, {
     method: "POST",
@@ -676,21 +676,37 @@ function Templates() {
         <div className="card">
           <div className="row gap">
             <Field label="Total Steps">
-              <input
-                type="number"
-                min="1"
-                max={(tpl.steps || []).length || 1}
-                value={totalSteps}
-                onChange={(e) => {
-                  const max = (tpl.steps || []).length || 1;
-                  const v = Math.max(1, Math.min(max, Number(e.target.value || 1)));
-                  setTotalSteps(v); // ★ nur State ändern, nicht zurücksyncen
-                }}
-              />
-            </Field>
-            <div className="muted" style={{alignSelf:'end'}}>von {(tpl.steps || []).length}</div>
-          </div>
-        </div>
+  <input
+    type="number"
+    min="1"
+    value={totalSteps}
+    onChange={(e) => {
+      const desired = Math.max(1, Number(e.target.value || 1));
+      const currentLen = (tpl?.steps || []).length;
+
+      // falls gewünschte Steps > vorhandene → Steps-Array auffüllen
+      if (desired > currentLen) {
+        const toAdd = desired - currentLen;
+        const baseIndex = currentLen;
+        setListByScope(prev => prev.map(t => {
+          if (t.name !== activeName) return t;
+          const nextSteps = [...(t.steps || [])];
+          for (let i = 0; i < toAdd; i++) {
+            const stepNumber = String(baseIndex + i + 1);
+            nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
+          }
+          return { ...t, steps: nextSteps };
+        }));
+      }
+
+      setTotalSteps(desired);
+    }}
+  />
+</Field>
+<div className="muted" style={{alignSelf:'end'}}>
+  von {(tpl.steps || []).length}
+</div>
+
       )}
 
       {tpl ? (
