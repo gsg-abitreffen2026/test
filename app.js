@@ -224,7 +224,7 @@ function PrimaryButton({ children, onClick, disabled }) { return (<button classN
 
 
                                                          
- /* ==== PART 2 ==== */
+/* ==== PART 2 ==== */
 /** ============ APP ============ */
 function App() {
   const [page, setPage] = React.useState("login");
@@ -322,7 +322,6 @@ function Login({ user, setUser, pw, setPw, onSubmit, err }) {
 }
 
 /** ============ DASHBOARD ============ */
-/** ============ DASHBOARD ============ */
 function Dashboard() {
   const [stats, setStats] = React.useState({ sent: 0, replies: 0, hot: 0, needReview: 0, meetings: 0 });
   const [contacts, setContacts] = React.useState([]);
@@ -331,7 +330,7 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({}); // id/email -> { active: boolean }
+  const [updates, setUpdates] = React.useState({}); // key -> {id, email, active:boolean}
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
 
@@ -344,7 +343,6 @@ function Dashboard() {
       ]);
       setStats(s);
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
-      // ★ Normalize: active als echtes boolean ins UI
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
       setContacts(norm);
     } catch (e) {
@@ -367,27 +365,30 @@ function Dashboard() {
     catch (e) { setError(e.message); }
   };
 
-  // ★ Toggle: boolean drehen + in updates merken
+  // robust: id & email mitführen
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
-    const newActive = !row.active; // boolean
-    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
-    setUpdates((prev) => ({ ...prev, [key]: { active: newActive } }));
+    const newActive = !row.active;
+    setContacts((prev) =>
+      prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r))
+    );
+    setUpdates((prev) => ({
+      ...prev,
+      [key]: { id: row.id || null, email: row.email || null, active: newActive },
+    }));
   };
 
-  // ★ Save: booleans an Backend
   const saveActive = async () => {
-    const payload = Object.entries(updates).map(([k, v]) => ({
-      id: k.includes("@") ? undefined : k,
-      email: k.includes("@") ? k : undefined,
-      active: !!v.active
+    const payload = Object.values(updates).map(u => ({
+      id: u.id || undefined,
+      email: u.email || undefined,
+      active: !!u.active,
     }));
     if (!payload.length) return;
     try {
       await httpPost(API.toggleActive(), { updates: payload });
       setUpdates({});
-      // optional: re-load to be safe
-      // await loadAll();
+      await loadAll(); // reload, damit UI/Sheet 100% synchron sind
     } catch (e) {
       setError(e.message || "Speichern fehlgeschlagen");
     }
@@ -422,7 +423,7 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* ... (unverändert) ... */}
+      {/* ... deine KPI/Controls bleiben wie gehabt ... */}
 
       <Section
         title="Kontakte"
@@ -456,7 +457,7 @@ function Dashboard() {
                   <td>{r.status || ""}</td>
                   <td>
                     <PillToggle
-                      on={!!r.active} // ★ boolean
+                      on={!!r.active}
                       onLabel="aktiv"
                       offLabel="deaktiviert"
                       onClick={() => toggleActive(r)}
@@ -476,8 +477,10 @@ function Dashboard() {
     </section>
   );
 }
-
 /* ==== END PART 2 ==== */
+
+
+
 
 
 
@@ -534,7 +537,7 @@ function Templates() {
 
       const steps = first[0]?.steps || [];
       const tsRaw = typeof first[0]?.total_steps === "number" ? first[0].total_steps : steps.length || 1;
-      setTotalSteps(clampSteps(tsRaw)); // ★ clamp auf 1..5
+      setTotalSteps(clampSteps(tsRaw));
     } catch (e) {
       setErr(e.message || "Fehler");
     } finally {
@@ -552,8 +555,27 @@ function Templates() {
     if (!tpl) return;
     const len = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
     const tsRaw = typeof tpl.total_steps === "number" ? tpl.total_steps : (len || 1);
-    setTotalSteps(clampSteps(tsRaw)); // ★ clamp
+    setTotalSteps(clampSteps(tsRaw));
   }, [tpl]);
+
+  const ensureSteps = (desired) => {
+    const d = clampSteps(desired);
+    const currentLen = (tpl?.steps || []).length;
+    if (d > currentLen) {
+      const toAdd = d - currentLen;
+      const baseIndex = currentLen;
+      setListByScope(prev => prev.map(t => {
+        if (t.name !== activeName) return t;
+        const nextSteps = [...(t.steps || [])];
+        for (let i = 0; i < toAdd; i++) {
+          const stepNumber = String(baseIndex + i + 1);
+          nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
+        }
+        return { ...t, steps: nextSteps };
+      }));
+    }
+    setTotalSteps(d);
+  };
 
   const updateStep = (idx, patch) => {
     setListByScope(prev => prev.map(t =>
@@ -563,7 +585,7 @@ function Templates() {
 
   const save = async () => {
     if (!tpl) return;
-    const safeTotal = clampSteps(totalSteps); // ★ clamp vor Save
+    const safeTotal = clampSteps(totalSteps);
     const payload = {
       sequence_id: activeName,
       total_steps: safeTotal,
@@ -592,16 +614,14 @@ function Templates() {
     setTotalSteps(1);
   };
 
-  // ★ NEU: Template löschen
+  // Delete stabil: Backend löschen + reload()
   const removeTemplate = async () => {
     if (!activeName) return;
     if (!confirm(`Template "${activeName}" wirklich löschen?`)) return;
     try {
       if (scope === "local") await httpPost(API.deleteTemplate(activeName), {});
       else await httpPost(API.global.deleteTemplate(activeName), {});
-      setListByScope(prev => prev.filter(t => t.name !== activeName));
-      const next = (scope === "local" ? localList : globalList).find(t => t.name !== activeName)?.name || "";
-      setActiveName(next);
+      await load();
       alert("Template gelöscht");
     } catch (e) {
       alert(e.message || "Fehler beim Löschen");
@@ -633,7 +653,6 @@ function Templates() {
   const setUpdateSubjectRef = (el, updater) => { if (el) el._updateSubject = updater; };
   const setUpdateBodyRef = (el, updater) => { if (el) el._updateBody = updater; };
 
-  // Sichtbare Steps auf totalSteps (geclamped) begrenzen
   const visibleSteps = React.useMemo(() => {
     const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
     const n = clampSteps(totalSteps);
@@ -660,7 +679,6 @@ function Templates() {
 
         <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
         <PrimaryButton onClick={createNew}>Neues Template</PrimaryButton>
-        {/* ★ NEU: Löschen */}
         <TextButton onClick={removeTemplate} disabled={!activeName}>Löschen</TextButton>
       </div>
 
@@ -669,42 +687,33 @@ function Templates() {
           <div className="card">
             <div className="row gap vcenter">
               <Field label="Total Steps">
-                {/* ★ UI-Verbesserung: Buttons 1–5 + Stepper */}
                 <div className="row gap">
                   {[1,2,3,4,5].map(n => (
                     <button
                       key={n}
-                      onClick={() => setTotalSteps(n)}
+                      onClick={() => ensureSteps(n)}  // <- füllt bei Bedarf auf
                       className={cn("btn", totalSteps===n && "primary")}
                       type="button"
                     >{n}</button>
                   ))}
                   <div className="row gap">
-                    <button type="button" className="btn" onClick={() => setTotalSteps(clampSteps(totalSteps-1))}>–</button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => ensureSteps(totalSteps-1)}
+                    >–</button>
                     <input
                       type="number"
                       min="1" max="5"
                       value={clampSteps(totalSteps)}
-                      onChange={(e) => {
-                        const desired = clampSteps(e.target.value);
-                        const currentLen = (tpl?.steps || []).length;
-                        const need = Math.max(0, desired - currentLen);
-                        if (need > 0) {
-                          setListByScope(prev => prev.map(t => {
-                            if (t.name !== activeName) return t;
-                            const nextSteps = [...(t.steps || [])];
-                            for (let i = 0; i < need; i++) {
-                              const stepNumber = String(nextSteps.length + 1);
-                              nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
-                            }
-                            return { ...t, steps: nextSteps };
-                          }));
-                        }
-                        setTotalSteps(desired);
-                      }}
+                      onChange={(e) => ensureSteps(e.target.value)}
                       style={{ width: 64 }}
                     />
-                    <button type="button" className="btn" onClick={() => setTotalSteps(clampSteps(totalSteps+1))}>+</button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => ensureSteps(totalSteps+1)}
+                    >+</button>
                   </div>
                 </div>
               </Field>
@@ -1064,8 +1073,7 @@ function Blacklist() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      // ★ Toggle entfernt → wir laden IMMER inkl. Bounces
-      const r = await httpGet(API.global.blacklist(q, true));
+      const r = await httpGet(API.global.blacklist(q, true)); // immer inkl. Bounces
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
   }, [q]);
@@ -1087,7 +1095,6 @@ function Blacklist() {
       {err && <div className="error">{err}</div>}
       <Toolbar>
         <input placeholder="Suche" value={q} onChange={(e) => setQ(e.target.value)} />
-        {/* ★ Toggle für Bounces entfernt */}
         <TextButton onClick={load}>Suchen</TextButton>
       </Toolbar>
 
@@ -1117,13 +1124,12 @@ function Blacklist() {
 /** ============ ERROR LIST (GLOBAL PAGE) ============ */
 function ErrorList() {
   const [rows, setRows] = React.useState([]);
-  const [sel, setSel] = React.useState({}); // id -> true
+  const [sel, setSel] = React.useState({}); // clientKey -> true
   const [err, setErr] = React.useState("");
 
-  // Filter + Suche
   const [search, setSearch] = React.useState("");
-  const [filterCol, setFilterCol] = React.useState("");     // Spalte auswählen
-  const [onlyEmpty, setOnlyEmpty] = React.useState(true);   // nur leere anzeigen
+  const [filterCol, setFilterCol] = React.useState("");
+  const [onlyEmpty, setOnlyEmpty] = React.useState(true);
   const errorCols = ['email','Anrede','firstName','lastName','company','phone','mobile','reason'];
 
   const load = React.useCallback(async () => {
@@ -1131,43 +1137,22 @@ function ErrorList() {
     try {
       const r = await httpGet(API.global.errorsList());
       const listRaw = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
-      // ★ Eindeutige IDs erzwingen + Deduplizieren
-      const map = new Map();
-      for (let i = 0; i < listRaw.length; i++) {
-        const x = listRaw[i] || {};
-        const id = String(x.id || x._id || x.uuid || `row-${i}`);
-        if (!map.has(id)) map.set(id, { ...x, id });
-      }
-      setRows(Array.from(map.values()));
+      const list = listRaw.map((x, i) => {
+        const serverId = x.id || x._id || null;
+        const clientKey = serverId ? `s-${serverId}` : `c-${i}-${(x.email||'')}-${(x.company||'')}`;
+        return { ...x, id: serverId, __clientKey: clientKey };
+      });
+      // eindeutige clientKeys sicherstellen
+      const dedup = [];
+      const seen = new Set();
+      for (const r of list) { if (!seen.has(r.__clientKey)) { seen.add(r.__clientKey); dedup.push(r); } }
+      setRows(dedup);
+      setSel({});
     } catch (e) { setErr(e.message || "Fehler"); }
   }, []);
   React.useEffect(() => { load(); }, [load]);
 
-  const toggle = (id) => setSel(prev => ({ ...prev, [id]: !prev[id] }));
-  const toggleAll = (checked) => {
-    if (!rows.length) return;
-    const next = {};
-    if (checked) rows.forEach(r => next[r.id] = true);
-    setSel(checked ? next : {});
-  };
-
-  const removeSelected = async () => {
-    const ids = rows.filter(r => sel[r.id]).map(r => r.id);
-    if (!ids.length) return;
-    if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
-    try {
-      await httpPost(API.global.errorsDelete(), { ids }); // ★ Backend soll NUR diese IDs löschen
-      // ★ Lokalen State gezielt bereinigen (nicht invertieren)
-      setRows(prev => prev.filter(r => !ids.includes(r.id)));
-      setSel({});
-    } catch (e) { alert(e.message || "Fehler beim Löschen"); }
-  };
-
-  const isBad = (row, key) => {
-    if (["email","Anrede","firstName","lastName","company"].includes(key)) return !row[key];
-    if (key === "phoneOrMobile") return !(row.phone || row.mobile);
-    return false;
-  };
+  const toggle = (ckey) => setSel(prev => ({ ...prev, [ckey]: !prev[ckey] }));
 
   const filtered = React.useMemo(() => {
     const s = (search || "").toLowerCase();
@@ -1181,11 +1166,34 @@ function ErrorList() {
   }, [rows, search, filterCol, onlyEmpty]);
 
   const masterRef = React.useRef(null);
-  const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.id]);
-  const someChecked = filtered.some(r => sel[r.id]) && !allChecked;
+  const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.__clientKey]);
+  const someChecked = filtered.some(r => sel[r.__clientKey]) && !allChecked;
   React.useEffect(() => {
     if (masterRef.current) masterRef.current.indeterminate = someChecked;
   }, [someChecked, allChecked, filtered]);
+
+  const toggleAll = (checked) => {
+    const next = {};
+    if (checked) filtered.forEach(r => { if (r.id) next[r.__clientKey] = true; }); // nur echte IDs
+    setSel(checked ? next : {});
+  };
+
+  const removeSelected = async () => {
+    const ids = rows.filter(r => sel[r.__clientKey] && r.id).map(r => r.id);
+    if (!ids.length) { alert("Keine löschbaren Einträge ausgewählt."); return; }
+    if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
+    try {
+      await httpPost(API.global.errorsDelete(), { ids });
+      setRows(prev => prev.filter(r => !(r.id && ids.includes(r.id))));
+      setSel({});
+    } catch (e) { alert(e.message || "Fehler beim Löschen"); }
+  };
+
+  const isBad = (row, key) => {
+    if (["email","Anrede","firstName","lastName","company"].includes(key)) return !row[key];
+    if (key === "phoneOrMobile") return !(row.phone || row.mobile);
+    return false;
+  };
 
   return (
     <section className="grid gap">
@@ -1202,7 +1210,9 @@ function ErrorList() {
           nur leere anzeigen
         </label>
         <TextButton onClick={load}>Neu laden</TextButton>
-        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>Erledigt (löschen)</PrimaryButton>
+        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.__clientKey] && r.id)}>
+          Erledigt (löschen)
+        </PrimaryButton>
       </Toolbar>
 
       <div className="table-wrap">
@@ -1228,12 +1238,14 @@ function ErrorList() {
           </thead>
           <tbody>
             {filtered.map((r) => (
-              <tr key={r.id}>{/* ★ Keine Index-Fallbacks → verhindert duplicate key Warnung */}
+              <tr key={r.__clientKey}>
                 <td>
                   <input
                     type="checkbox"
-                    checked={!!sel[r.id]}
-                    onChange={()=>toggle(r.id)}
+                    checked={!!sel[r.__clientKey]}
+                    onChange={()=>toggle(r.__clientKey)}
+                    disabled={!r.id}
+                    title={!r.id ? "Eintrag ohne Server-ID – kann nicht gelöscht werden." : ""}
                   />
                 </td>
                 <td className={isBad(r,"email")?"bad":""}>{r.email||""}</td>
@@ -1254,7 +1266,6 @@ function ErrorList() {
   );
 }
 /* ==== END PART 5 ==== */
-
 
 
 
