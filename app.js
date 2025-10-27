@@ -1,6 +1,5 @@
-// ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
+// ===== avus smart-cap Dashboard (globals, API, helpers) =====
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
-
 
 /** =====================
  *  CONFIG / API PATHS
@@ -8,6 +7,7 @@ const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
+// --- API (ohne führenden Slash in path) ---
 const API = {
   // LOCAL
   contacts: (limit, includeInactive = true) =>
@@ -17,17 +17,14 @@ const API = {
   templates: () => `${API_BASE}?path=api/templates`,
   saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  // ★ NEU: Template löschen (lokal)
   deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
 
   signatures: () => `${API_BASE}?path=api/signatures`,
   saveSignature: () => `${API_BASE}?path=api/signatures/save`,
   setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
   signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  // ★ NEU: Signatur löschen (lokal)
   deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
 
-  // Blacklist (wir zeigen Blacklist & Bounces getrennt; Toggle wird in PART 5 entfernt)
   blacklistLocal: (q, includeBounces) =>
     `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
 
@@ -45,16 +42,15 @@ const API = {
     templates: () => `${API_BASE}?path=api/global/templates`,
     saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
     setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
-    // ★ NEU: Template löschen (global)
     deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
 
     signatures: () => `${API_BASE}?path=api/global/signatures`,
     saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
     setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
-    // ★ NEU: Signatur löschen (global)
     deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
 
-    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+    blacklist: (q, includeBounces) =>
+      `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
 
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
@@ -63,20 +59,62 @@ const API = {
   },
 };
 
-/** ============ helpers ============ */
+// --- HTTP mit Retry/Backoff; Reads als POST (kein Preflight) ---
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
-// ★ NEU: Steps-Helfer (max 5)
+// Steps clamp 1..5
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
+async function fetchWithRetry(url, options = {}, tries = 5) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 || res.status === 503) {
+        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
+        await sleep(wait);
+        continue;
+      }
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0,120)}`);
+      }
+      const txt = await res.text();
+      try { return JSON.parse(txt); } catch { return { text: txt }; }
+    } catch (err) {
+      lastErr = err;
+      await sleep(150 * (i + 1));
+    }
+  }
+  throw lastErr || new Error(`Request failed: ${url}`);
+}
+
+async function httpGet(url) {
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: "", // POST für Reads → kein CORS-Preflight
+  });
+}
+async function httpPost(url, body) {
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(body || {}),
+  });
+}
 
 /** ============ CSV/PDF parsing ============ */
 function detectDelimiter(headerLine) {
   const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
-  const candidates = [{ d: ";", n: c(headerLine, ";") }, { d: ",", n: c(headerLine, ",") }, { d: "\t", n: c(headerLine, "\t") }];
+  const candidates = [
+    { d: ";", n: c(headerLine, ";") },
+    { d: ",", n: c(headerLine, ",") },
+    { d: "\t", n: c(headerLine, "\t") },
+  ];
   candidates.sort((a, b) => b.n - a.n);
   return candidates[0].n > 0 ? candidates[0].d : ",";
 }
@@ -105,102 +143,12 @@ function splitCSV(line, delim) {
   out.push(cur);
   return out;
 }
-async function parseCSV(file) {
-  const textRaw = await file.text();
-  const text = textRaw.replace(/^\uFEFF/, "");
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (!lines.length) return [];
-  const delim = detectDelimiter(lines[0]);
-  const headersRaw = splitCSV(lines[0], delim).map((h) => h.trim());
-  const headers = headersRaw.map(normalizeKey);
-  const data = [];
-  for (let r = 1; r < lines.length; r++) {
-    const cols = splitCSV(lines[r], delim).map((c) => c.trim());
-    const rec = {}; headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
-    const email = rec.email || ""; const last = rec.lastName || ""; const comp = rec.company || "";
-    if (email && last && comp) {
-      data.push({
-        email: email, lastName: last, company: comp,
-        firstName: rec.firstName || "", position: rec.position || "",
-        phone: rec.phone || "", mobile: rec.mobile || "",
-        Anrede: rec.Anrede || "",
-      });
-    }
-  }
-  return data;
-}
-async function parsePDF(file) {
-  const arrayBuf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
-  async function pageToLines(page) {
-    const tc = await page.getTextContent();
-    const items = tc.items.map((it) => { const [a,b,c,d,e,f]=it.transform; return { x:e, y:f, str:it.str }; });
-    items.sort((p, q) => q.y - p.y || p.x - q.x);
-    const lines = []; const EPS = 2.5;
-    for (const t of items) { const L = lines.find((l) => Math.abs(l.y - t.y) < EPS); if (L) L.items.push(t); else lines.push({ y: t.y, items: [t] }); }
-    return lines.map((L) => { L.items.sort((p, q) => p.x - q.x); return { y: L.y, items: L.items, text: L.items.map((i) => i.str).join(" ") }; });
-  }
-  function detectColumns(headerLine) {
-    const map = {};
-    if (headerLine && headerLine.items) {
-      for (const it of headerLine.items) {
-        const s = it.str.toLowerCase();
-        if (!map.firma && s.includes("firma")) map.firma = it.x;
-        if (!map.anrede && s.includes("anrede")) map.anrede = it.x;
-        if (!map.vorname && s.includes("vorname")) map.vorname = it.x;
-        if (!map.nachname && s.includes("nachname")) map.nachname = it.x;
-        if (!map.telefon && s.includes("telefon")) map.telefon = it.x;
-        if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr."))) map.email = it.x;
-      }
-    }
-    return { firma: map.firma ?? 30, anrede: map.anrede ?? 170, vor: map.vorname ?? 230, nach: map.nachname ?? 310, tel: map.telefon ?? 430, mail: map.email ?? 520 };
-  }
-  function sliceByColumns(line, cols) {
-    const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
-    for (const it of line.items) {
-      const x = it.x;
-      const key = x < cols.anrede ? "firma" : x < cols.vor ? "anrede" : x < cols.nach ? "vor" : x < cols.tel ? "nach" : x < cols.mail ? "tel" : "mail";
-      buckets[key].push(it.str);
-    }
-    const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
-    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
-  }
-  const collected = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const lines = await pageToLines(page);
-    const header = lines.find((L) => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
-    const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
-    for (const L of lines) {
-      if (header && Math.abs(L.y - header.y) < 3) continue;
-      const rec = sliceByColumns(L, cols);
-      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
-      const minimal = rec.company && rec.last;
-      if (hasEmail || minimal) {
-        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
-      }
-    }
-  }
-  const seen = new Set(); const rows = [];
-  for (const r of collected) {
-    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
-    if (!seen.has(key)) { seen.add(key); rows.push(r); }
-  }
-  return rows;
-}
+/* ==== END PART 1 ==== */
 
-/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
-function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
-  return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
-}
-function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
-function Section({ title, right, children, className }) {
-  return (<section className={cn("card", className)}><div className="row between vcenter"><h3>{title}</h3>{right}</div><div className="spacer-8" />{children}</section>);
-}
-function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
-function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
-function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
- /* ==== END PART 1 ==== */
+
+
+
+
 
 
 
