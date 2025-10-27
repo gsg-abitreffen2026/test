@@ -94,11 +94,11 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
 
 async function httpGet(url) {
   return fetchWithRetry(url, {
-    method: "POST",
+    method: "GET",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "", // POST für Reads → kein CORS-Preflight
   });
 }
+
 async function httpPost(url, body) {
   return fetchWithRetry(url, {
     method: "POST",
@@ -330,7 +330,7 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({}); // key -> {id, email, active:boolean}
+  const [updates, setUpdates] = React.useState({});      // id/email -> { active: boolean }
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
 
@@ -341,8 +341,8 @@ function Dashboard() {
         httpGet(API.stats()),
         httpGet(API.contacts(limit, showInactive))
       ]);
-      setStats(s);
-      const arr = Array.isArray(c.contacts) ? c.contacts : [];
+      setStats(s || { sent:0,replies:0,hot:0,needReview:0,meetings:0 });
+      const arr = Array.isArray(c?.contacts) ? c.contacts : [];
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
       setContacts(norm);
     } catch (e) {
@@ -354,54 +354,42 @@ function Dashboard() {
 
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
+  // Kampagne
   const start = async () => {
-    setCampaignRunning(true);
-    try { await httpPost(API.startCampaign(), {}); }
-    catch (e) { setError(e.message); }
+    try { await httpPost(API.startCampaign(), { per_day: perDay }); setCampaignRunning(true); }
+    catch (e) { setError(e.message || "Start fehlgeschlagen"); }
   };
   const stop = async () => {
-    setCampaignRunning(false);
-    try { await httpPost(API.stopCampaign(), {}); }
-    catch (e) { setError(e.message); }
+    try { await httpPost(API.stopCampaign(), {}); setCampaignRunning(false); }
+    catch (e) { setError(e.message || "Stop fehlgeschlagen"); }
   };
 
-  // robust: id & email mitführen
+  // Active togglen & speichern
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
     const newActive = !row.active;
-    setContacts((prev) =>
-      prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r))
-    );
-    setUpdates((prev) => ({
-      ...prev,
-      [key]: { id: row.id || null, email: row.email || null, active: newActive },
-    }));
+    setContacts(prev => prev.map(r => ((r.id||r.email)===key ? { ...r, active:newActive } : r)));
+    setUpdates(prev => ({ ...prev, [key]: { active:newActive } }));
   };
-
   const saveActive = async () => {
-    const payload = Object.values(updates).map(u => ({
-      id: u.id || undefined,
-      email: u.email || undefined,
-      active: !!u.active,
+    const payload = Object.entries(updates).map(([k,v]) => ({
+      id: k.includes("@") ? undefined : k,
+      email: k.includes("@") ? k : undefined,
+      active: !!v.active
     }));
     if (!payload.length) return;
-    try {
-      await httpPost(API.toggleActive(), { updates: payload });
-      setUpdates({});
-      await loadAll(); // reload, damit UI/Sheet 100% synchron sind
-    } catch (e) {
-      setError(e.message || "Speichern fehlgeschlagen");
-    }
+    try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); }
+    catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
   };
 
-  const markTodoDone = async (row) => {
+  // ToDos
+  const markTodoDone = (row) => {
     const key = (row.id || row.email || "").toString();
-    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, todo: false } : r)));
-    setTodoUpdates((prev) => ({ ...prev, [key]: { todo: false } }));
+    setContacts(prev => prev.map(r => ((r.id||r.email)===key ? { ...r, todo:false } : r)));
+    setTodoUpdates(prev => ({ ...prev, [key]: { todo:false } }));
   };
-
   const saveTodos = async () => {
-    const payload = Object.entries(todoUpdates).map(([k, v]) => ({
+    const payload = Object.entries(todoUpdates).map(([k,v]) => ({
       id: k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
       todo: v.todo
@@ -410,12 +398,8 @@ function Dashboard() {
     try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
     catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
   };
-
   const finishedTodos = React.useMemo(
-    () => contacts.filter((r) =>
-      String(r.finished).toUpperCase() === "TRUE" &&
-      String(r.todo).toUpperCase() === "TRUE"
-    ),
+    () => contacts.filter(r => asBoolTF(r.finished) && asBoolTF(r.todo)),
     [contacts]
   );
 
@@ -423,8 +407,52 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* ... deine KPI/Controls bleiben wie gehabt ... */}
+      {/* KPIs */}
+      <div className="grid cols-3 gap">
+        <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
+      </div>
 
+      {/* To-Dos */}
+      <div className="grid cols-2 gap">
+        <Section title="To-Dos (angeschrieben)">
+          <ul className="list">
+            {finishedTodos.map(r => (
+              <li key={r.id || r.email} className="row between vcenter">
+                <div className="grow">
+                  <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
+                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt || ""}</div>
+                  {r.phone && <a className="btn link" href={`tel:${r.phone}`}>Tel. anrufen</a>}
+                </div>
+                <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
+              </li>
+            ))}
+            {!finishedTodos.length && <li className="muted">Keine To-Dos.</li>}
+          </ul>
+          <div className="row end">
+            <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>Änderungen speichern</PrimaryButton>
+          </div>
+        </Section>
+
+        {/* Kampagnen-Einstellungen */}
+        <Section title="Kampagneneinstellungen">
+          <div className="grid gap">
+            <Field label="Sendouts pro Tag">
+              <input type="number" min="0" value={perDay} onChange={(e)=>setPerDay(Number(e.target.value||0))} />
+            </Field>
+            <div className="row gap">
+              <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
+              <TextButton onClick={stop} disabled={!campaignRunning}>Stoppen</TextButton>
+              <TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>
+            </div>
+          </div>
+        </Section>
+      </div>
+
+      {/* Kontakte */}
       <Section
         title="Kontakte"
         right={
@@ -432,12 +460,12 @@ function Dashboard() {
             <label className="row gap">
               <span>Anzahl</span>
               <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-                {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
+                {[10,25,50,75,100,150,200].map(n => <option key={n} value={n}>{n}</option>)}
               </select>
             </label>
             <label className="row gap">
               <span>Deaktivierte zeigen</span>
-              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+              <input type="checkbox" checked={showInactive} onChange={(e)=>setShowInactive(e.target.checked)} />
             </label>
             <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
           </div>
@@ -449,7 +477,7 @@ function Dashboard() {
               <tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr>
             </thead>
             <tbody>
-              {contacts.map((r) => (
+              {contacts.map(r => (
                 <tr key={r.id || r.email}>
                   <td>{[r.firstName, r.lastName].filter(Boolean).join(" ")}</td>
                   <td>{r.company}</td>
@@ -460,11 +488,14 @@ function Dashboard() {
                       on={!!r.active}
                       onLabel="aktiv"
                       offLabel="deaktiviert"
-                      onClick={() => toggleActive(r)}
+                      onClick={()=>toggleActive(r)}
                     />
                   </td>
                 </tr>
               ))}
+              {!contacts.length && (
+                <tr><td colSpan="5" className="muted">Keine Daten geladen.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -477,6 +508,7 @@ function Dashboard() {
     </section>
   );
 }
+
 /* ==== END PART 2 ==== */
 
 
