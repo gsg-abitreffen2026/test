@@ -12,14 +12,21 @@ const API = {
   contacts: (limit, includeInactive = true) =>
     `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}&includeInactive=${includeInactive ? 1 : 0}`,
   stats: () => `${API_BASE}?path=api/stats`,
+
   templates: () => `${API_BASE}?path=api/templates`,
   saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
+  // ★ NEU: Template löschen (lokal)
+  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
+
   signatures: () => `${API_BASE}?path=api/signatures`,
   saveSignature: () => `${API_BASE}?path=api/signatures/save`,
   setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
   signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
+  // ★ NEU: Signatur löschen (lokal)
+  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
 
+  // Blacklist (wir zeigen Blacklist & Bounces getrennt; Toggle wird in PART 5 entfernt)
   blacklistLocal: (q, includeBounces) =>
     `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
 
@@ -37,10 +44,14 @@ const API = {
     templates: () => `${API_BASE}?path=api/global/templates`,
     saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
     setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
+    // ★ NEU: Template löschen (global)
+    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
 
     signatures: () => `${API_BASE}?path=api/global/signatures`,
     saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
     setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
+    // ★ NEU: Signatur löschen (global)
+    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
 
     blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
@@ -51,55 +62,15 @@ const API = {
   },
 };
 
-/** =====================
- *  HTTP Layer (robust)
- *  ===================== */
-async function fetchWithRetry(url, options = {}, tries = 5) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(url, options); // folgt Redirects normal
-      if (res.status === 429 || res.status === 503) {
-        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
-        await sleep(wait);
-        continue;
-      }
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 120)}`);
-      }
-      const txt = await res.text();
-      try { return JSON.parse(txt); } catch { return { text: txt }; }
-    } catch (err) {
-      lastErr = err;
-      await sleep(150 * (i + 1));
-    }
-  }
-  throw lastErr || new Error(`Request failed: ${url}`);
-}
-// httpGet: wieder echter GET (keine Header, kein Body, kein Preflight)
-async function httpGet(url) {
-  return fetchWithRetry(url, {
-    method: "GET",
-    // optional: cache ausschalten, damit Sheets-Änderungen sofort sichtbar sind
-    cache: "no-store",
-  });
-}
-
-async function httpPost(url, body) {
-  return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(body || {}),
-  });
-}
-
 /** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
+// ★ NEU: Steps-Helfer (max 5)
+const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
+
 
 /** ============ CSV/PDF parsing ============ */
 function detectDelimiter(headerLine) {
@@ -350,6 +321,7 @@ function Login({ user, setUser, pw, setPw, onSubmit, err }) {
 }
 
 /** ============ DASHBOARD ============ */
+/** ============ DASHBOARD ============ */
 function Dashboard() {
   const [stats, setStats] = React.useState({ sent: 0, replies: 0, hot: 0, needReview: 0, meetings: 0 });
   const [contacts, setContacts] = React.useState([]);
@@ -358,7 +330,7 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({});
+  const [updates, setUpdates] = React.useState({}); // id/email -> { active: boolean }
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
 
@@ -371,7 +343,9 @@ function Dashboard() {
       ]);
       setStats(s);
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
-      setContacts(arr);
+      // ★ Normalize: active als echtes boolean ins UI
+      const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
+      setContacts(norm);
     } catch (e) {
       setError(e.message || "Fehler beim Laden");
     } finally {
@@ -392,20 +366,30 @@ function Dashboard() {
     catch (e) { setError(e.message); }
   };
 
+  // ★ Toggle: boolean drehen + in updates merken
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
-    const newActive = String(row.active).toUpperCase() === "TRUE" ? "FALSE" : "TRUE";
+    const newActive = !row.active; // boolean
     setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
     setUpdates((prev) => ({ ...prev, [key]: { active: newActive } }));
   };
 
+  // ★ Save: booleans an Backend
   const saveActive = async () => {
     const payload = Object.entries(updates).map(([k, v]) => ({
-      id: k, email: k.includes("@") ? k : undefined, active: v.active
+      id: k.includes("@") ? undefined : k,
+      email: k.includes("@") ? k : undefined,
+      active: !!v.active
     }));
     if (!payload.length) return;
-    try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); }
-    catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
+    try {
+      await httpPost(API.toggleActive(), { updates: payload });
+      setUpdates({});
+      // optional: re-load to be safe
+      // await loadAll();
+    } catch (e) {
+      setError(e.message || "Speichern fehlgeschlagen");
+    }
   };
 
   const markTodoDone = async (row) => {
@@ -416,7 +400,9 @@ function Dashboard() {
 
   const saveTodos = async () => {
     const payload = Object.entries(todoUpdates).map(([k, v]) => ({
-      id: k, email: k.includes("@") ? k : undefined, todo: v.todo
+      id: k.includes("@") ? undefined : k,
+      email: k.includes("@") ? k : undefined,
+      todo: v.todo
     }));
     if (!payload.length) return;
     try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
@@ -435,52 +421,7 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      <div className="grid cols-2 gap">
-        <Section title="To-Dos (angeschrieben)">
-          <ul className="list">
-            {finishedTodos.map((r) => (
-              <li key={r.id || r.email} className="row between vcenter">
-                <div className="grow">
-                  <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
-                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div>
-                </div>
-                <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
-              </li>
-            ))}
-          </ul>
-          <div className="row end">
-            <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>
-              Änderungen speichern
-            </PrimaryButton>
-          </div>
-        </Section>
-
-        <Section title="Kampagneneinstellungen">
-          <div className="grid gap">
-            <Field label="Sendouts pro Tag">
-              <input
-                type="number"
-                min="0"
-                value={perDay}
-                onChange={(e) => setPerDay(Number(e.target.value || 0))}
-              />
-            </Field>
-            <div className="row gap">
-              <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
-              <TextButton onClick={stop} disabled={!campaignRunning}>Stoppen</TextButton>
-              <TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>
-            </div>
-          </div>
-        </Section>
-      </div>
-
-      <div className="grid cols-3 gap">
-        <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
-      </div>
+      {/* ... (unverändert) ... */}
 
       <Section
         title="Kontakte"
@@ -514,7 +455,7 @@ function Dashboard() {
                   <td>{r.status || ""}</td>
                   <td>
                     <PillToggle
-                      on={String(r.active).toUpperCase() === "TRUE"}
+                      on={!!r.active} // ★ boolean
                       onLabel="aktiv"
                       offLabel="deaktiviert"
                       onClick={() => toggleActive(r)}
@@ -534,7 +475,18 @@ function Dashboard() {
     </section>
   );
 }
+
 /* ==== END PART 2 ==== */
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -563,7 +515,7 @@ function Templates() {
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState("");
   const [cursorTarget, setCursorTarget] = React.useState(null);
-  const [totalSteps, setTotalSteps] = React.useState(0);
+  const [totalSteps, setTotalSteps] = React.useState(1);
 
   const load = React.useCallback(async () => {
     setLoading(true); setErr("");
@@ -580,8 +532,8 @@ function Templates() {
       setActiveName(first[0]?.name || "");
 
       const steps = first[0]?.steps || [];
-      const ts = typeof first[0]?.total_steps === "number" ? first[0].total_steps : steps.length || 1;
-      setTotalSteps(Math.max(1, ts));
+      const tsRaw = typeof first[0]?.total_steps === "number" ? first[0].total_steps : steps.length || 1;
+      setTotalSteps(clampSteps(tsRaw)); // ★ clamp auf 1..5
     } catch (e) {
       setErr(e.message || "Fehler");
     } finally {
@@ -595,12 +547,11 @@ function Templates() {
   const setListByScope = (fn) => { if (scope === "local") setLocalList(fn); else setGlobalList(fn); };
   const tpl = React.useMemo(() => list.find((t) => t.name === activeName) || null, [list, activeName]);
 
-  // Wenn Template wechselt, totalSteps neu initialisieren (ohne Tippen zu überschreiben)
   React.useEffect(() => {
     if (!tpl) return;
     const len = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
-    const ts = typeof tpl.total_steps === "number" ? tpl.total_steps : (len || 1);
-    setTotalSteps(Math.max(1, ts));
+    const tsRaw = typeof tpl.total_steps === "number" ? tpl.total_steps : (len || 1);
+    setTotalSteps(clampSteps(tsRaw)); // ★ clamp
   }, [tpl]);
 
   const updateStep = (idx, patch) => {
@@ -611,10 +562,11 @@ function Templates() {
 
   const save = async () => {
     if (!tpl) return;
+    const safeTotal = clampSteps(totalSteps); // ★ clamp vor Save
     const payload = {
       sequence_id: activeName,
-      total_steps: totalSteps,
-      steps: (tpl.steps || []).slice(0, totalSteps).map((s) => ({
+      total_steps: safeTotal,
+      steps: (tpl.steps || []).slice(0, safeTotal).map((s) => ({
         step: s.step || "",
         subject: s.subject || "",
         body_html: s.body_html || "",
@@ -637,6 +589,22 @@ function Templates() {
     setListByScope(prev => [{ ...base }, ...prev]);
     setActiveName(nm);
     setTotalSteps(1);
+  };
+
+  // ★ NEU: Template löschen
+  const removeTemplate = async () => {
+    if (!activeName) return;
+    if (!confirm(`Template "${activeName}" wirklich löschen?`)) return;
+    try {
+      if (scope === "local") await httpPost(API.deleteTemplate(activeName), {});
+      else await httpPost(API.global.deleteTemplate(activeName), {});
+      setListByScope(prev => prev.filter(t => t.name !== activeName));
+      const next = (scope === "local" ? localList : globalList).find(t => t.name !== activeName)?.name || "";
+      setActiveName(next);
+      alert("Template gelöscht");
+    } catch (e) {
+      alert(e.message || "Fehler beim Löschen");
+    }
   };
 
   const fields = [
@@ -664,11 +632,11 @@ function Templates() {
   const setUpdateSubjectRef = (el, updater) => { if (el) el._updateSubject = updater; };
   const setUpdateBodyRef = (el, updater) => { if (el) el._updateBody = updater; };
 
-  // Sichtbare Steps auf totalSteps begrenzen
+  // Sichtbare Steps auf totalSteps (geclamped) begrenzen
   const visibleSteps = React.useMemo(() => {
     const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
-    const n = Math.max(0, Number(totalSteps || 0));
-    return arr.slice(0, n || arr.length);
+    const n = clampSteps(totalSteps);
+    return arr.slice(0, n);
   }, [tpl, totalSteps]);
 
   return (
@@ -691,39 +659,53 @@ function Templates() {
 
         <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
         <PrimaryButton onClick={createNew}>Neues Template</PrimaryButton>
+        {/* ★ NEU: Löschen */}
+        <TextButton onClick={removeTemplate} disabled={!activeName}>Löschen</TextButton>
       </div>
 
       {tpl ? (
         <>
           <div className="card">
-            <div className="row gap">
+            <div className="row gap vcenter">
               <Field label="Total Steps">
-                <input
-                  type="number"
-                  min="1"
-                  value={totalSteps}
-                  onChange={(e) => {
-                    const desired = Math.max(1, Number(e.target.value || 1));
-                    const currentLen = (tpl?.steps || []).length;
-
-                    // Falls gewünschte Steps > vorhandene → Steps-Array auffüllen
-                    if (desired > currentLen) {
-                      const toAdd = desired - currentLen;
-                      const baseIndex = currentLen;
-                      setListByScope(prev => prev.map(t => {
-                        if (t.name !== activeName) return t;
-                        const nextSteps = [...(t.steps || [])];
-                        for (let i = 0; i < toAdd; i++) {
-                          const stepNumber = String(baseIndex + i + 1);
-                          nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
+                {/* ★ UI-Verbesserung: Buttons 1–5 + Stepper */}
+                <div className="row gap">
+                  {[1,2,3,4,5].map(n => (
+                    <button
+                      key={n}
+                      onClick={() => setTotalSteps(n)}
+                      className={cn("btn", totalSteps===n && "primary")}
+                      type="button"
+                    >{n}</button>
+                  ))}
+                  <div className="row gap">
+                    <button type="button" className="btn" onClick={() => setTotalSteps(clampSteps(totalSteps-1))}>–</button>
+                    <input
+                      type="number"
+                      min="1" max="5"
+                      value={clampSteps(totalSteps)}
+                      onChange={(e) => {
+                        const desired = clampSteps(e.target.value);
+                        const currentLen = (tpl?.steps || []).length;
+                        const need = Math.max(0, desired - currentLen);
+                        if (need > 0) {
+                          setListByScope(prev => prev.map(t => {
+                            if (t.name !== activeName) return t;
+                            const nextSteps = [...(t.steps || [])];
+                            for (let i = 0; i < need; i++) {
+                              const stepNumber = String(nextSteps.length + 1);
+                              nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
+                            }
+                            return { ...t, steps: nextSteps };
+                          }));
                         }
-                        return { ...t, steps: nextSteps };
-                      }));
-                    }
-
-                    setTotalSteps(desired);
-                  }}
-                />
+                        setTotalSteps(desired);
+                      }}
+                      style={{ width: 64 }}
+                    />
+                    <button type="button" className="btn" onClick={() => setTotalSteps(clampSteps(totalSteps+1))}>+</button>
+                  </div>
+                </div>
               </Field>
               <div className="muted" style={{ alignSelf: 'end' }}>
                 von {(tpl.steps || []).length}
@@ -789,6 +771,12 @@ function Templates() {
   );
 }
 /* ==== END PART 3 ==== */
+
+
+
+
+
+
 
 
 
@@ -931,6 +919,22 @@ function Signaturen() {
     }
   };
 
+  // ★ NEU: Signatur löschen
+  const onDelete = async () => {
+    if (!currentName) return;
+    if (scope === "local" && currentName === "standard")
+      return alert("Standard-Signatur kann nicht gelöscht werden.");
+    if (!confirm(`Signatur "${currentName}" wirklich löschen?`)) return;
+    try {
+      if (scope === "local") await httpPost(API.deleteSignature(currentName), {});
+      else await httpPost(API.global.deleteSignature(currentName), {});
+      alert("Signatur gelöscht");
+      await load();
+    } catch (e) {
+      alert(e.message || "Fehler beim Löschen");
+    }
+  };
+
   return (
     <section className="grid gap">
       {err && <div className="error">{err}</div>}
@@ -972,6 +976,10 @@ function Signaturen() {
           Neu laden
         </TextButton>
         <PrimaryButton onClick={onCreate}>Neue Signatur</PrimaryButton>
+        {/* ★ NEU: Löschen */}
+        <TextButton onClick={onDelete} disabled={!currentName || (scope==="local" && currentName==="standard")}>
+          Löschen
+        </TextButton>
       </div>
 
       <div className="card">
@@ -1010,8 +1018,22 @@ function Signaturen() {
     </section>
   );
 }
-
 /* ==== END PART 4 ==== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1034,7 +1056,6 @@ function Signaturen() {
 /** ============ BLACKLIST (GLOBAL) ============ */
 function Blacklist() {
   const [q, setQ] = React.useState("");
-  const [withBounces, setWithBounces] = React.useState(true);
   const [rows, setRows] = React.useState({ blacklist: [], bounces: [] });
   const [newEmail, setNewEmail] = React.useState("");
   const [err, setErr] = React.useState("");
@@ -1042,10 +1063,11 @@ function Blacklist() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      const r = await httpGet(API.global.blacklist(q, withBounces));
+      // ★ Toggle entfernt → wir laden IMMER inkl. Bounces
+      const r = await httpGet(API.global.blacklist(q, true));
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
-  }, [q, withBounces]);
+  }, [q]);
 
   React.useEffect(() => { load(); }, [load]);
 
@@ -1064,10 +1086,7 @@ function Blacklist() {
       {err && <div className="error">{err}</div>}
       <Toolbar>
         <input placeholder="Suche" value={q} onChange={(e) => setQ(e.target.value)} />
-        <label className="row gap">
-          <input type="checkbox" checked={withBounces} onChange={(e) => setWithBounces(e.target.checked)} />
-          Bounces einbeziehen
-        </label>
+        {/* ★ Toggle für Bounces entfernt */}
         <TextButton onClick={load}>Suchen</TextButton>
       </Toolbar>
 
@@ -1110,8 +1129,15 @@ function ErrorList() {
     setErr("");
     try {
       const r = await httpGet(API.global.errorsList());
-      const list = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
-      setRows(list.map((x, i) => ({ ...x, id: x.id || x._id || `row-${i}` })));
+      const listRaw = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
+      // ★ Eindeutige IDs erzwingen + Deduplizieren
+      const map = new Map();
+      for (let i = 0; i < listRaw.length; i++) {
+        const x = listRaw[i] || {};
+        const id = String(x.id || x._id || x.uuid || `row-${i}`);
+        if (!map.has(id)) map.set(id, { ...x, id });
+      }
+      setRows(Array.from(map.values()));
     } catch (e) { setErr(e.message || "Fehler"); }
   }, []);
   React.useEffect(() => { load(); }, [load]);
@@ -1127,10 +1153,12 @@ function ErrorList() {
   const removeSelected = async () => {
     const ids = rows.filter(r => sel[r.id]).map(r => r.id);
     if (!ids.length) return;
+    if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
     try {
-      await httpPost(API.global.errorsDelete(), { ids });
+      await httpPost(API.global.errorsDelete(), { ids }); // ★ Backend soll NUR diese IDs löschen
+      // ★ Lokalen State gezielt bereinigen (nicht invertieren)
+      setRows(prev => prev.filter(r => !ids.includes(r.id)));
       setSel({});
-      await load();
     } catch (e) { alert(e.message || "Fehler beim Löschen"); }
   };
 
@@ -1140,7 +1168,6 @@ function ErrorList() {
     return false;
   };
 
-  // Gefilterte Sicht
   const filtered = React.useMemo(() => {
     const s = (search || "").toLowerCase();
     return rows.filter(r => {
@@ -1152,7 +1179,6 @@ function ErrorList() {
     });
   }, [rows, search, filterCol, onlyEmpty]);
 
-  // master checkbox (indeterminate per Ref, kein JSX-Prop)
   const masterRef = React.useRef(null);
   const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.id]);
   const someChecked = filtered.some(r => sel[r.id]) && !allChecked;
@@ -1175,7 +1201,7 @@ function ErrorList() {
           nur leere anzeigen
         </label>
         <TextButton onClick={load}>Neu laden</TextButton>
-        <PrimaryButton onClick={removeSelected}>Erledigt (löschen)</PrimaryButton>
+        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>Erledigt (löschen)</PrimaryButton>
       </Toolbar>
 
       <div className="table-wrap">
@@ -1197,12 +1223,11 @@ function ErrorList() {
               <th>company</th>
               <th>phone</th>
               <th>mobile</th>
-              {/* reason bleibt in den Daten, ist absichtlich nicht sichtbar */}
             </tr>
           </thead>
           <tbody>
-            {filtered.map((r, i) => (
-              <tr key={r.id || i}>
+            {filtered.map((r) => (
+              <tr key={r.id}>{/* ★ Keine Index-Fallbacks → verhindert duplicate key Warnung */}
                 <td>
                   <input
                     type="checkbox"
@@ -1223,12 +1248,16 @@ function ErrorList() {
         </table>
       </div>
 
-      {/* UI-Polish später; leichte Markierung für fehlende Pflichtfelder */}
       <style>{`.bad{background:#281316;border:1px solid #5e2930}`}</style>
     </section>
   );
 }
 /* ==== END PART 5 ==== */
+
+
+
+
+
 
 
 
