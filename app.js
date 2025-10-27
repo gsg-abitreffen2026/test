@@ -1016,7 +1016,7 @@ function ErrorList() {
   const [sel, setSel] = React.useState({}); // id -> true
   const [err, setErr] = React.useState("");
 
-  // ★ Filter + Suche
+  // Filter + Suche
   const [search, setSearch] = React.useState("");
   const [filterCol, setFilterCol] = React.useState("");     // Spalte auswählen
   const [onlyEmpty, setOnlyEmpty] = React.useState(true);   // nur leere anzeigen
@@ -1027,7 +1027,6 @@ function ErrorList() {
     try {
       const r = await httpGet(API.global.errorsList());
       const list = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
-      // Mappe fehlende id's auf index-basierte Keys (failsafe)
       setRows(list.map((x, i) => ({ ...x, id: x.id || x._id || `row-${i}` })));
     } catch (e) { setErr(e.message || "Fehler"); }
   }, []);
@@ -1057,7 +1056,7 @@ function ErrorList() {
     return false;
   };
 
-  // ★ Gefilterte Sicht
+  // Gefilterte Sicht
   const filtered = React.useMemo(() => {
     const s = (search || "").toLowerCase();
     return rows.filter(r => {
@@ -1068,6 +1067,14 @@ function ErrorList() {
       return onlyEmpty ? v === '' : true;
     });
   }, [rows, search, filterCol, onlyEmpty]);
+
+  // master checkbox (indeterminate per Ref, kein JSX-Prop)
+  const masterRef = React.useRef(null);
+  const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.id]);
+  const someChecked = filtered.some(r => sel[r.id]) && !allChecked;
+  React.useEffect(() => {
+    if (masterRef.current) masterRef.current.indeterminate = someChecked;
+  }, [someChecked, allChecked, filtered]);
 
   return (
     <section className="grid gap">
@@ -1093,10 +1100,10 @@ function ErrorList() {
             <tr>
               <th style={{width:36}}>
                 <input
+                  ref={masterRef}
                   type="checkbox"
+                  checked={allChecked}
                   onChange={(e)=>toggleAll(e.target.checked)}
-                  checked={filtered.length>0 && filtered.every(r => sel[r.id])}
-                  indeterminate={filtered.some(r => sel[r.id]) && !filtered.every(r => sel[r.id])}
                 />
               </th>
               <th>email</th>
@@ -1106,12 +1113,12 @@ function ErrorList() {
               <th>company</th>
               <th>phone</th>
               <th>mobile</th>
-              {/* reason bewusst nicht anzeigen (bleibt in Daten vorhanden) */}
+              {/* reason bleibt in den Daten, ist absichtlich nicht sichtbar */}
             </tr>
           </thead>
           <tbody>
             {filtered.map((r, i) => (
-              <tr key={r.id || i} className={(!r.email||!r.firstName||!r.lastName)?'row-error':''}>
+              <tr key={r.id || i}>
                 <td>
                   <input
                     type="checkbox"
@@ -1132,12 +1139,13 @@ function ErrorList() {
         </table>
       </div>
 
-      {/* UI-Polish: CSS später. Placeholder für "bad" Markierung beibehalten */}
+      {/* UI-Polish später; leichte Markierung für fehlende Pflichtfelder */}
       <style>{`.bad{background:#281316;border:1px solid #5e2930}`}</style>
     </section>
   );
 }
 /* ==== END PART 5 ==== */
+
 /* ==== PART 6 ==== */
 /** ============ KONTAKTE (upload + validation -> error_list COPY) ============ */
 function Kontakte() {
