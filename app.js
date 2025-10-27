@@ -228,7 +228,30 @@ function Section({ title, right, children, className }) {
 function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
 function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
+ /* ==== END PART 1 ==== */
 
+
+
+
+
+
+
+
+
+
+
+
+                                                         
+
+
+
+
+                                                         
+
+
+
+
+                                                         
  /* ==== PART 2 ==== */
 /** ============ APP ============ */
 function App() {
@@ -512,18 +535,34 @@ function Dashboard() {
   );
 }
 /* ==== END PART 2 ==== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ==== PART 3 ==== */
 /** ============ TEMPLATES (local/global archive) ============ */
 function Templates() {
-  const [scope, setScope] = React.useState("local"); // local | global
+  const [scope, setScope] = React.useState("local");
   const [localList, setLocalList] = React.useState([]);
   const [globalList, setGlobalList] = React.useState([]);
   const [activeName, setActiveName] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [err, setErr] = React.useState("");
   const [cursorTarget, setCursorTarget] = React.useState(null);
-
-  // ★ Stabiler totalSteps-State (nicht beim Tippen überschreiben)
   const [totalSteps, setTotalSteps] = React.useState(0);
 
   const load = React.useCallback(async () => {
@@ -540,12 +579,9 @@ function Templates() {
       const first = (scope === "local" ? a : b);
       setActiveName(first[0]?.name || "");
 
-      // totalSteps initial an akt. Template koppeln
       const steps = first[0]?.steps || [];
-      const ts = (typeof first[0]?.total_steps === "number")
-        ? first[0].total_steps
-        : steps.length;
-      setTotalSteps(Math.max(1, Math.min(steps.length || 1, ts || 1)));
+      const ts = typeof first[0]?.total_steps === "number" ? first[0].total_steps : steps.length || 1;
+      setTotalSteps(Math.max(1, ts));
     } catch (e) {
       setErr(e.message || "Fehler");
     } finally {
@@ -556,48 +592,34 @@ function Templates() {
   React.useEffect(() => { load(); }, [load]);
 
   const list = scope === "local" ? localList : globalList;
-  const setListByScope = (fn) => {
-    if (scope === "local") setLocalList(fn);
-    else setGlobalList(fn);
-  };
+  const setListByScope = (fn) => { if (scope === "local") setLocalList(fn); else setGlobalList(fn); };
+  const tpl = React.useMemo(() => list.find((t) => t.name === activeName) || null, [list, activeName]);
 
-  const tpl = React.useMemo(
-    () => list.find((t) => t.name === activeName) || null,
-    [list, activeName]
-  );
-
-  // Wenn Template/Switch, totalSteps neu ableiten – aber nicht beim Tippen überschreiben
+  // Wenn Template wechselt, totalSteps neu initialisieren (ohne Tippen zu überschreiben)
   React.useEffect(() => {
     if (!tpl) return;
     const len = Array.isArray(tpl.steps) ? tpl.steps.length : 0;
-    const ts = typeof tpl.total_steps === "number" ? tpl.total_steps : len;
-    setTotalSteps(Math.max(1, Math.min(len || 1, ts || 1)));
+    const ts = typeof tpl.total_steps === "number" ? tpl.total_steps : (len || 1);
+    setTotalSteps(Math.max(1, ts));
   }, [tpl]);
 
   const updateStep = (idx, patch) => {
-    setListByScope(prev =>
-      prev.map(t =>
-        t.name !== activeName
-          ? t
-          : ({ ...t, steps: t.steps.map((s,i)=> i===idx ? { ...s, ...patch } : s ) })
-      )
-    );
+    setListByScope(prev => prev.map(t =>
+      t.name !== activeName ? t : ({ ...t, steps: (t.steps || []).map((s, i) => i === idx ? { ...s, ...patch } : s) })
+    ));
   };
 
-  // ★ Speichern: total_steps wird wie gehabt an step==1 persistiert (Server-seitig)
   const save = async () => {
     if (!tpl) return;
     const payload = {
       sequence_id: activeName,
       total_steps: totalSteps,
-      steps: (tpl.steps || [])
-        .slice(0, totalSteps)
-        .map((s) => ({
-          step: s.step || "",
-          subject: s.subject || "",
-          body_html: s.body_html || "",
-          delay_days: Number(s.delay_days || 0),
-        })),
+      steps: (tpl.steps || []).slice(0, totalSteps).map((s) => ({
+        step: s.step || "",
+        subject: s.subject || "",
+        body_html: s.body_html || "",
+        delay_days: Number(s.delay_days || 0),
+      })),
     };
     try {
       if (scope === "local") await httpPost(API.saveTemplate(activeName), payload);
@@ -611,11 +633,7 @@ function Templates() {
   const createNew = () => {
     const nm = prompt("Neuen Templatenamen eingeben:");
     if (!nm) return;
-    const base = {
-      name: nm,
-      total_steps: 1,
-      steps: [{ step: "1", subject: "", body_html: "", delay_days: 0 }],
-    };
+    const base = { name: nm, total_steps: 1, steps: [{ step: "1", subject: "", body_html: "", delay_days: 0 }] };
     setListByScope(prev => [{ ...base }, ...prev]);
     setActiveName(nm);
     setTotalSteps(1);
@@ -643,12 +661,13 @@ function Templates() {
       el.setSelectionRange(pos, pos);
     });
   };
-  const setUpdateSubjectRef = (el, updater) => { if (el) { el._updateSubject = updater; } };
-  const setUpdateBodyRef = (el, updater) => { if (el) { el._updateBody = updater; } };
+  const setUpdateSubjectRef = (el, updater) => { if (el) el._updateSubject = updater; };
+  const setUpdateBodyRef = (el, updater) => { if (el) el._updateBody = updater; };
 
-  const visibleSteps = useMemo(() => {
+  // Sichtbare Steps auf totalSteps begrenzen
+  const visibleSteps = React.useMemo(() => {
     const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
-    const n = Math.max(0, Math.min(arr.length, Number(totalSteps || 0)));
+    const n = Math.max(0, Number(totalSteps || 0));
     return arr.slice(0, n || arr.length);
   }, [tpl, totalSteps]);
 
@@ -658,104 +677,111 @@ function Templates() {
 
       <div className="row gap wrap">
         <Field label="Archiv">
-          <select value={scope} onChange={(e)=>{ setScope(e.target.value); }}>
+          <select value={scope} onChange={(e) => setScope(e.target.value)}>
             <option value="local">Lokal</option>
             <option value="global">Global</option>
           </select>
         </Field>
+
         <Field label="Template">
-          <select value={activeName} onChange={(e)=> setActiveName(e.target.value)}>
+          <select value={activeName} onChange={(e) => setActiveName(e.target.value)}>
             {list.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
           </select>
         </Field>
+
         <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
         <PrimaryButton onClick={createNew}>Neues Template</PrimaryButton>
       </div>
 
-      {tpl && (
-        <div className="card">
-          <div className="row gap">
-            <Field label="Total Steps">
-  <input
-    type="number"
-    min="1"
-    value={totalSteps}
-    onChange={(e) => {
-      const desired = Math.max(1, Number(e.target.value || 1));
-      const currentLen = (tpl?.steps || []).length;
-
-      // falls gewünschte Steps > vorhandene → Steps-Array auffüllen
-      if (desired > currentLen) {
-        const toAdd = desired - currentLen;
-        const baseIndex = currentLen;
-        setListByScope(prev => prev.map(t => {
-          if (t.name !== activeName) return t;
-          const nextSteps = [...(t.steps || [])];
-          for (let i = 0; i < toAdd; i++) {
-            const stepNumber = String(baseIndex + i + 1);
-            nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
-          }
-          return { ...t, steps: nextSteps };
-        }));
-      }
-
-      setTotalSteps(desired);
-    }}
-  />
-</Field>
-<div className="muted" style={{alignSelf:'end'}}>
-  von {(tpl.steps || []).length}
-</div>
-
-      )}
-
       {tpl ? (
-        <div className="grid gap">
-          {visibleSteps.map((s, i) => {
-            const stepIndex = i + 1;
-            return (
-              <div key={i} className="card">
-                <div className="strong">{`Step ${stepIndex}`}</div>
-                <Field label="Betreff">
-                  <input
-                    value={s.subject || ""}
-                    data-kind="subject"
-                    onFocus={(e) => setCursorTarget(e.target)}
-                    ref={(el) => { setUpdateSubjectRef(el, (v) => updateStep(i, { subject: v })); }}
-                    onChange={(e) => updateStep(i, { subject: e.target.value })}
-                  />
-                </Field>
-                <Field label="Body (HTML)">
-                  <textarea
-                    rows="8"
-                    value={s.body_html || ""}
-                    data-kind="body"
-                    onFocus={(e) => setCursorTarget(e.target)}
-                    ref={(el) => { setUpdateBodyRef(el, (v) => updateStep(i, { body_html: v })); }}
-                    onChange={(e) => updateStep(i, { body_html: e.target.value })}
-                  />
-                </Field>
-                <div className="row gap wrap">
-                  {fields.map((f) => (
-                    <TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>
-                      {f.label}
-                    </TextButton>
-                  ))}
-                </div>
-                <Field label="Verzögerung (Tage)">
-                  <input
-                    type="number"
-                    value={s.delay_days || 0}
-                    onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })}
-                  />
-                </Field>
+        <>
+          <div className="card">
+            <div className="row gap">
+              <Field label="Total Steps">
+                <input
+                  type="number"
+                  min="1"
+                  value={totalSteps}
+                  onChange={(e) => {
+                    const desired = Math.max(1, Number(e.target.value || 1));
+                    const currentLen = (tpl?.steps || []).length;
+
+                    // Falls gewünschte Steps > vorhandene → Steps-Array auffüllen
+                    if (desired > currentLen) {
+                      const toAdd = desired - currentLen;
+                      const baseIndex = currentLen;
+                      setListByScope(prev => prev.map(t => {
+                        if (t.name !== activeName) return t;
+                        const nextSteps = [...(t.steps || [])];
+                        for (let i = 0; i < toAdd; i++) {
+                          const stepNumber = String(baseIndex + i + 1);
+                          nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
+                        }
+                        return { ...t, steps: nextSteps };
+                      }));
+                    }
+
+                    setTotalSteps(desired);
+                  }}
+                />
+              </Field>
+              <div className="muted" style={{ alignSelf: 'end' }}>
+                von {(tpl.steps || []).length}
               </div>
-            );
-          })}
-          <div className="row end">
-            <PrimaryButton onClick={save}>Template speichern</PrimaryButton>
+            </div>
           </div>
-        </div>
+
+          <div className="grid gap">
+            {visibleSteps.map((s, i) => {
+              const stepIndex = i + 1;
+              return (
+                <div key={i} className="card">
+                  <div className="strong">{`Step ${stepIndex}`}</div>
+
+                  <Field label="Betreff">
+                    <input
+                      value={s.subject || ""}
+                      data-kind="subject"
+                      onFocus={(e) => setCursorTarget(e.target)}
+                      ref={(el) => { setUpdateSubjectRef(el, (v) => updateStep(i, { subject: v })); }}
+                      onChange={(e) => updateStep(i, { subject: e.target.value })}
+                    />
+                  </Field>
+
+                  <Field label="Body (HTML)">
+                    <textarea
+                      rows="8"
+                      value={s.body_html || ""}
+                      data-kind="body"
+                      onFocus={(e) => setCursorTarget(e.target)}
+                      ref={(el) => { setUpdateBodyRef(el, (v) => updateStep(i, { body_html: v })); }}
+                      onChange={(e) => updateStep(i, { body_html: e.target.value })}
+                    />
+                  </Field>
+
+                  <div className="row gap wrap">
+                    {fields.map((f) => (
+                      <TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>
+                        {f.label}
+                      </TextButton>
+                    ))}
+                  </div>
+
+                  <Field label="Verzögerung (Tage)">
+                    <input
+                      type="number"
+                      value={s.delay_days || 0}
+                      onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })}
+                    />
+                  </Field>
+                </div>
+              );
+            })}
+            <div className="row end">
+              <PrimaryButton onClick={save}>Template speichern</PrimaryButton>
+            </div>
+          </div>
+        </>
       ) : (
         <div className="muted">Kein Template gewählt.</div>
       )}
@@ -763,6 +789,30 @@ function Templates() {
   );
 }
 /* ==== END PART 3 ==== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ==== PART 4 ==== */
 /** ============ SIGNATURES (local/global archive) ============ */
 function Signaturen() {
@@ -962,6 +1012,24 @@ function Signaturen() {
 }
 
 /* ==== END PART 4 ==== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 /* ==== PART 5 ==== */
 /** ============ BLACKLIST (GLOBAL) ============ */
 function Blacklist() {
@@ -1161,6 +1229,33 @@ function ErrorList() {
   );
 }
 /* ==== END PART 5 ==== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /* ==== PART 6 ==== */
 /** ============ KONTAKTE (upload + validation -> error_list COPY) ============ */
