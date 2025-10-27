@@ -143,6 +143,58 @@ function splitCSV(line, delim) {
   out.push(cur);
   return out;
 }
+
+/** ============ UI helpers ============ */
+function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
+  return (
+    <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>
+      {on ? onLabel : offLabel}
+    </button>
+  );
+}
+
+function Toolbar({ children }) {
+  return <div className="toolbar">{children}</div>;
+}
+
+function Section({ title, right, children, className }) {
+  return (
+    <section className={cn("card", className)}>
+      <div className="row between vcenter">
+        <h3>{title}</h3>
+        {right}
+      </div>
+      <div className="spacer-8" />
+      {children}
+    </section>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function TextButton({ children, onClick, disabled }) {
+  return (
+    <button className="btn" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
+
+function PrimaryButton({ children, onClick, disabled }) {
+  return (
+    <button className="btn primary" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
+
 /* ==== END PART 1 ==== */
 
 
