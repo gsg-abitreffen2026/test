@@ -548,6 +548,7 @@ function Dashboard() {
       ]);
       setStats(s);
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
+      // normalize: active → boolean
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
       setContacts(norm);
     } catch (e) {
@@ -570,24 +571,27 @@ function Dashboard() {
     catch (e) { setError(e.message); }
   };
 
-  // Toggle (UI)
+  // Toggle im UI
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
-    const newActive = !row.active;
-    setContacts(prev => prev.map(r =>
-      ((r.id || r.email) === key) ? { ...r, active: newActive } : r
-    ));
-    setUpdates(prev => ({ ...prev, [key]: { active: newActive } }));
+    const newActive = !row.active; // boolean
+    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
+    setUpdates((prev) => ({ ...prev, [key]: { active: newActive } }));
   };
 
-  // Save → "TRUE"/"FALSE" + Reload + Feedback
+  // Helper für TRUE/FALSE Strings
+  const tf = (b) => (b ? "TRUE" : "FALSE");
+
+  // SPEICHERN: TRUE/FALSE-Strings + reload
   const saveActive = async () => {
-    const payload = Object.entries(updates).map(([k, v]) => ({
+    const entries = Object.entries(updates);
+    if (!entries.length) return;
+
+    const payload = entries.map(([k, v]) => ({
       id: k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
-      active: v.active ? "TRUE" : "FALSE"
+      active: tf(!!v.active),
     }));
-    if (!payload.length) return;
 
     try {
       await httpPost(API.toggleActive(), { updates: payload });
@@ -595,8 +599,7 @@ function Dashboard() {
       await loadAll();
       alert("Änderungen gespeichert.");
     } catch (e) {
-      console.error(e);
-      alert(e.message || "Speichern fehlgeschlagen");
+      setError(e.message || "Speichern fehlgeschlagen");
     }
   };
 
@@ -607,14 +610,23 @@ function Dashboard() {
   };
 
   const saveTodos = async () => {
-    const payload = Object.entries(todoUpdates).map(([k, v]) => ({
+    const entries = Object.entries(todoUpdates);
+    if (!entries.length) return;
+
+    const payload = entries.map(([k, v]) => ({
       id: k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
-      todo: v.todo
+      todo: tf(!!v.todo),
     }));
-    if (!payload.length) return;
-    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
-    catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
+
+    try {
+      await httpPost(API.setTodo(), { updates: payload });
+      setTodoUpdates({});
+      await loadAll();
+      alert("To-Dos gespeichert.");
+    } catch (e) {
+      setError(e.message || "Fehler beim Speichern der ToDos");
+    }
   };
 
   const finishedTodos = React.useMemo(
@@ -629,7 +641,7 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* To-Dos & Kampagneneinstellungen OBEN */}
+      {/* Oben: To-Dos & Kampagne */}
       <div className="grid cols-2 gap">
         <Section title="To-Dos (angeschrieben)">
           <ul className="list">
@@ -727,6 +739,7 @@ function Dashboard() {
   );
 }
 /* ==== END PART 2 ==== */
+
 
 
 
@@ -1297,7 +1310,7 @@ function Blacklist() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      // immer inklusive Bounces laden
+      // Immer inkl. Bounces laden; Toggle entfernt
       const r = await httpGet(API.global.blacklist(q, true));
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
@@ -1354,20 +1367,20 @@ function ErrorList() {
 
   // Filter + Suche
   const [search, setSearch] = React.useState("");
-  const [filterCol, setFilterCol] = React.useState("");
-  const [onlyEmpty, setOnlyEmpty] = React.useState(true);
+  const [filterCol, setFilterCol] = React.useState("");     // Spalte auswählen
+  const [onlyEmpty, setOnlyEmpty] = React.useState(true);   // nur leere anzeigen
   const errorCols = ['email','Anrede','firstName','lastName','company','phone','mobile','reason'];
 
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      const r = await httpGet(API.global.errorsList()); // httpGet hängt TS an
+      const r = await httpGet(API.global.errorsList());
       const listRaw = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
-      // dedupe + stabile IDs
+      // Eindeutige IDs erzwingen + Deduplizieren
       const map = new Map();
       for (let i = 0; i < listRaw.length; i++) {
         const x = listRaw[i] || {};
-        const id = String(x.id || x._id || x.uuid || `row-${i}-${(x.email||"")}`);
+        const id = String(x.id || x._id || x.uuid || `row-${i}`);
         if (!map.has(id)) map.set(id, { ...x, id });
       }
       setRows(Array.from(map.values()));
@@ -1387,11 +1400,25 @@ function ErrorList() {
     const ids = rows.filter(r => sel[r.id]).map(r => r.id);
     if (!ids.length) return;
     if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
+
     try {
-      await httpPost(API.global.errorsDelete(), { ids });
+      // Kompatibles Body-Format (ids UND rows:[{id}])
+      const body = {
+        ids,
+        rows: ids.map(id => ({ id }))
+      };
+
+      await httpPost(API.global.errorsDelete(), body);
+
+      // Lokalen State gezielt bereinigen
+      setRows(prev => prev.filter(r => !ids.includes(r.id)));
       setSel({});
-      await load(); // echte frische Liste vom Server
-    } catch (e) { alert(e.message || "Fehler beim Löschen"); }
+      await load();
+
+      alert("Ausgewählte Einträge gelöscht.");
+    } catch (e) {
+      alert(e.message || "Fehler beim Löschen");
+    }
   };
 
   const isBad = (row, key) => {
@@ -1433,9 +1460,7 @@ function ErrorList() {
           nur leere anzeigen
         </label>
         <TextButton onClick={load}>Neu laden</TextButton>
-        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>
-          Erledigt (löschen)
-        </PrimaryButton>
+        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>Erledigt (löschen)</PrimaryButton>
       </Toolbar>
 
       <div className="table-wrap">
@@ -1487,6 +1512,7 @@ function ErrorList() {
   );
 }
 /* ==== END PART 5 ==== */
+
 
 
 
