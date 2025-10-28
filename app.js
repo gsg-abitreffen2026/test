@@ -60,7 +60,7 @@ const API = {
   },
 };
 
-/* --- HTTP-Layer (POST-only Reads, kein Preflight, Retry/Backoff) --- */
+/* --- HTTP-Layer (Retry/Backoff) --- */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function fetchWithRetry(url, options = {}, tries = 5) {
@@ -88,14 +88,21 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
   throw lastErr || new Error(`Request failed: ${url}`);
 }
 
-// Reads → POST ohne Body, damit kein CORS-Preflight entsteht
-async function httpGet(url) {
-  return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "",
-  });
+/* === NEW: Helper für TRUE/FALSE-Strings und Fehlerprüfung === */
+const strTF = (b) => (b ? 'TRUE' : 'FALSE');
+function ensureOk(res, ctx = 'Request') {
+  if (res && typeof res === 'object' && res.error) {
+    throw new Error(`${ctx}: ${res.error}`);
+  }
+  return res;
 }
+
+/* === Reads → echtes GET, damit sicher doGet === */
+async function httpGet(url) {
+  return fetchWithRetry(url, { method: "GET" });
+}
+
+/* === Writes → POST mit JSON-Body (unverändert) === */
 async function httpPost(url, body) {
   return fetchWithRetry(url, {
     method: "POST",
@@ -404,6 +411,8 @@ function Dashboard() {
         httpGet(API.stats()),
         httpGet(API.contacts(limit, showInactive))
       ]);
+      ensureOk(s, 'Stats laden');
+      ensureOk(c, 'Kontakte laden');
       setStats(s);
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) })); // Sheets → boolean
@@ -417,8 +426,24 @@ function Dashboard() {
 
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
-  const start = async () => { setCampaignRunning(true); try { await httpPost(API.startCampaign(), {}); } catch (e) { setError(e.message); } };
-  const stop  = async () => { setCampaignRunning(false); try { await httpPost(API.stopCampaign(),  {}); } catch (e) { setError(e.message); } };
+  const start = async () => {
+    try {
+      const res = await httpPost(API.startCampaign(), {});
+      ensureOk(res, 'Kampagne starten');
+      setCampaignRunning(true);
+    } catch (e) {
+      setError(e.message || "Fehler beim Start");
+    }
+  };
+  const stop  = async () => {
+    try {
+      const res = await httpPost(API.stopCampaign(), {});
+      ensureOk(res, 'Kampagne stoppen');
+      setCampaignRunning(false);
+    } catch (e) {
+      setError(e.message || "Fehler beim Stoppen");
+    }
+  };
 
   // Toggle: boolean im UI drehen + merken
   const toggleActive = (row) => {
@@ -433,11 +458,12 @@ function Dashboard() {
     const payload = Object.entries(updates).map(([k, v]) => ({
       id:    k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
-      active: toTF(!!v.active)
+      active: strTF(!!v.active) // TRUE/FALSE als String
     }));
     if (!payload.length) return;
     try {
-      await httpPost(API.toggleActive(), { updates: payload });
+      const res = await httpPost(API.toggleActive(), { updates: payload });
+      ensureOk(res, 'Active speichern');
       setUpdates({});
       alert("Änderungen gespeichert");
       await loadAll(); // Werte vom Server spiegeln
@@ -456,11 +482,16 @@ function Dashboard() {
     const payload = Object.entries(todoUpdates).map(([k, v]) => ({
       id:    k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
-      todo:  v.todo
+      todo:  !!v.todo
     }));
     if (!payload.length) return;
-    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
-    catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
+    try {
+      const res = await httpPost(API.setTodo(), { updates: payload });
+      ensureOk(res, 'ToDos speichern');
+      setTodoUpdates({});
+    } catch (e) {
+      setError(e.message || "Fehler beim Speichern der ToDos");
+    }
   };
 
   const finishedTodos = React.useMemo(
@@ -469,6 +500,12 @@ function Dashboard() {
       String(r.todo).toUpperCase() === "TRUE"
     ),
     [contacts]
+  );
+
+  // Optionales Client-Filtering (Deaktivierte ausblenden)
+  const visibleContacts = React.useMemo(
+    () => contacts.filter(r => showInactive || !!r.active),
+    [contacts, showInactive]
   );
 
   return (
@@ -542,7 +579,7 @@ function Dashboard() {
               <tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr>
             </thead>
             <tbody>
-              {contacts.map((r) => (
+              {visibleContacts.map((r) => (
                 <tr key={r.id || r.email}>
                   <td>{[r.firstName, r.lastName].filter(Boolean).join(" ")}</td>
                   <td>{r.company}</td>
@@ -600,8 +637,6 @@ function Dashboard() {
 
 
 
-
-
 /* ==== PART 3 ==== */
 /** ============ TEMPLATES (local/global archive) ============ */
 function Templates() {
@@ -621,6 +656,9 @@ function Templates() {
         httpGet(API.templates()),
         httpGet(API.global.templates())
       ]);
+      ensureOk(loc, 'Templates lokal laden');
+      ensureOk(glob, 'Templates global laden');
+
       const a = Array.isArray(loc) ? loc : [];
       const b = Array.isArray(glob) ? glob : [];
       setLocalList(a); setGlobalList(b);
@@ -663,16 +701,18 @@ function Templates() {
     const payload = {
       sequence_id: activeName,
       total_steps: safeTotal,
-      steps: (tpl.steps || []).slice(0, safeTotal).map((s) => ({
-        step: s.step || "",
+      steps: (tpl.steps || []).slice(0, safeTotal).map((s, i) => ({
+        step: s.step || String(i + 1),
         subject: s.subject || "",
         body_html: s.body_html || "",
         delay_days: Number(s.delay_days || 0),
       })),
     };
     try {
-      if (scope === "local") await httpPost(API.saveTemplate(activeName), payload);
-      else await httpPost(API.global.saveTemplate(activeName), payload);
+      let res;
+      if (scope === "local") res = await httpPost(API.saveTemplate(activeName), payload);
+      else                   res = await httpPost(API.global.saveTemplate(activeName), payload);
+      ensureOk(res, 'Template speichern');
       alert("Template gespeichert");
     } catch (e) {
       alert(e.message || "Fehler");
@@ -693,8 +733,11 @@ function Templates() {
     if (!activeName) return;
     if (!confirm(`Template "${activeName}" wirklich löschen?`)) return;
     try {
-      if (scope === "local") await httpPost(API.deleteTemplate(activeName), {});
-      else await httpPost(API.global.deleteTemplate(activeName), {});
+      let res;
+      if (scope === "local") res = await httpPost(API.deleteTemplate(activeName), {});
+      else                   res = await httpPost(API.global.deleteTemplate(activeName), {});
+      ensureOk(res, 'Template löschen');
+
       setListByScope(prev => prev.filter(t => t.name !== activeName));
       const nextName = (scope === "local" ? localList : globalList).find(t => t.name !== activeName)?.name || "";
       setActiveName(nextName);
@@ -770,7 +813,7 @@ function Templates() {
           <div className="card">
             <div className="row gap vcenter">
               <Field label="Total Steps">
-                {/* Nur 1–5 Buttons, keine zweite Steuerung */}
+                {/* Nur 1–5 Buttons */}
                 <div className="row gap">
                   {[1,2,3,4,5].map(n => (
                     <button
@@ -908,6 +951,10 @@ function Signaturen() {
       const std = await httpGet(API.signaturesStandard()).catch(() => ({ html: "" }));
       const globList = await httpGet(API.global.signatures());
 
+      ensureOk(locList, 'Signaturen lokal laden');
+      // std kann leer sein, nicht zwingend ensureOk
+      ensureOk(globList, 'Signaturen global laden');
+
       if (myToken !== tokenRef.current) return;
 
       const locArr = Array.isArray(locList?.list)
@@ -968,8 +1015,9 @@ function Signaturen() {
     if (!currentName) return alert("Bitte Name vergeben.");
     try {
       const body = { name: currentName, html };
-      if (scope === "local") await httpPost(API.saveSignature(), body);
-      else await httpPost(API.global.saveSignature(), body);
+      const res = scope === "local" ? await httpPost(API.saveSignature(), body)
+                                    : await httpPost(API.global.saveSignature(), body);
+      ensureOk(res, 'Signatur speichern');
       alert("Signatur gespeichert");
       setCreating(false);
       await load();
@@ -986,12 +1034,13 @@ function Signaturen() {
 
   const onSetActive = async () => {
     try {
-      await httpPost(
+      const res = await httpPost(
         scope === "local"
           ? API.setActiveSignature()
           : API.global.setActiveSignature(),
         { scope, name: currentName }
       );
+      ensureOk(res, 'Aktive Signatur setzen');
       setActive({ scope, name: currentName });
       alert("Aktive Signatur gesetzt");
     } catch (e) {
@@ -999,15 +1048,17 @@ function Signaturen() {
     }
   };
 
-  // ★ NEU: Signatur löschen
+  // Signatur löschen
   const onDelete = async () => {
     if (!currentName) return;
     if (scope === "local" && currentName === "standard")
       return alert("Standard-Signatur kann nicht gelöscht werden.");
     if (!confirm(`Signatur "${currentName}" wirklich löschen?`)) return;
     try {
-      if (scope === "local") await httpPost(API.deleteSignature(currentName), {});
-      else await httpPost(API.global.deleteSignature(currentName), {});
+      const res = scope === "local"
+        ? await httpPost(API.deleteSignature(currentName), {})
+        : await httpPost(API.global.deleteSignature(currentName), {});
+      ensureOk(res, 'Signatur löschen');
       alert("Signatur gelöscht");
       await load();
     } catch (e) {
@@ -1056,7 +1107,6 @@ function Signaturen() {
           Neu laden
         </TextButton>
         <PrimaryButton onClick={onCreate}>Neue Signatur</PrimaryButton>
-        {/* ★ NEU: Löschen */}
         <TextButton onClick={onDelete} disabled={!currentName || (scope==="local" && currentName==="standard")}>
           Löschen
         </TextButton>
@@ -1144,6 +1194,7 @@ function Blacklist() {
     setErr("");
     try {
       const r = await httpGet(API.global.blacklist(q, true) + "&_=" + Date.now()); // Cache-Buster
+      ensureOk(r, 'Blacklist laden');
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
   }, [q]);
@@ -1154,7 +1205,8 @@ function Blacklist() {
     const email = (newEmail || "").trim();
     if (!email || !isEmail(email)) return alert("Bitte gültige E-Mail");
     try {
-      await httpPost(API.global.addBlacklist(), { email });
+      const res = await httpPost(API.global.addBlacklist(), { email });
+      ensureOk(res, 'Blacklist hinzufügen');
       setNewEmail("");
       await load();
     } catch (e) { alert(e.message || "Fehler"); }
@@ -1208,6 +1260,8 @@ function ErrorList() {
     try {
       const url = API.global.errorsList() + "&_=" + Date.now(); // Cache-Buster
       const r = await httpGet(url);
+      ensureOk(r, 'Fehlerliste laden');
+
       const listRaw = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
       // Eindeutige IDs + Dedupe
       const map = new Map();
@@ -1234,7 +1288,8 @@ function ErrorList() {
     if (!ids.length) return;
     if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
     try {
-      await httpPost(API.global.errorsDelete(), { ids });
+      const res = await httpPost(API.global.errorsDelete(), { ids });
+      ensureOk(res, 'Fehlerliste löschen');
       setRows(prev => prev.filter(r => !ids.includes(r.id))); // nur selektierte entfernen
       setSel({});
     } catch (e) {
@@ -1365,6 +1420,7 @@ function ErrorList() {
 
 
 
+
 /* ==== PART 6 ==== */
 /** ============ KONTAKTE (upload + validation -> error_list) ============ */
 function Kontakte() {
@@ -1443,9 +1499,13 @@ function Kontakte() {
     }
 
     try {
-      if (errors.length) await httpPost(API.global.errorsAdd(), { rows: errors });
+      if (errors.length) {
+        const resErr = await httpPost(API.global.errorsAdd(), { rows: errors });
+        ensureOk(resErr, 'Fehlerliste anlegen');
+      }
       if (valid.length) {
-        await httpPost(API.upload(), { rows: valid, mode });
+        const resUp = await httpPost(API.upload(), { rows: valid, mode });
+        ensureOk(resUp, 'Upload');
         alert(`Upload gesendet. OK: ${valid.length}${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
       } else {
         alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste kopiert.`);
@@ -1458,7 +1518,8 @@ function Kontakte() {
 
   const prepare = async () => {
     try {
-      await httpPost(API.prepareCampaign(), {});
+      const res = await httpPost(API.prepareCampaign(), {});
+      ensureOk(res, 'Vorbereitung');
       alert("Vorbereitung ausgelöst");
     } catch (e) {
       alert(e.message || "Fehler bei Vorbereitung");
@@ -1539,5 +1600,6 @@ function Kontakte() {
   }
 })();
 /* ==== END PART 6 ==== */
+
 
                                                         
