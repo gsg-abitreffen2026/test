@@ -12,12 +12,12 @@
   --danger:#e5484d;
 
   /* UI Palette (Dark, high-contrast, auf Basis avus Blau) */
-  --bg:#0a1320;             /* sehr dunkles Blau statt Grau */
-  --surface:#0e1a2b;        /* Karten-Hintergrund */
-  --surface-2:#112033;      /* Toolbar/Input */
-  --border:#1f3550;         /* Rahmen */
-  --text:#e8f2ff;           /* Primärtext auf Dunkel */
-  --muted:#a6b7cc;          /* Sekundärtext */
+  --bg:#0a1320;
+  --surface:#0e1a2b;
+  --surface-2:#112033;
+  --border:#1f3550;
+  --text:#e8f2ff;
+  --muted:#a6b7cc;
 
   /* Semantic */
   --primary:var(--avus-orange);
@@ -28,9 +28,7 @@
 /* Base */
 *{box-sizing:border-box}
 body{
-  margin:0;
-  background:var(--bg);
-  color:var(--text);
+  margin:0;background:var(--bg);color:var(--text);
   font:14px/1.5 "Merriweather Sans", system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans";
   -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale;
 }
@@ -39,8 +37,7 @@ body{
 /* Topbar / Brand */
 .topbar{
   display:flex;align-items:center;justify-content:space-between;
-  padding:12px 16px;
-  border-bottom:1px solid var(--border);
+  padding:12px 16px;border-bottom:1px solid var(--border);
   background:linear-gradient(180deg, #0e1b2e 0%, #0c1727 100%);
   position:sticky;top:0;z-index:5
 }
@@ -52,13 +49,7 @@ body{
 }
 .brand-top{font-weight:800;letter-spacing:.2px}
 .brand-bottom{font-size:12px;color:var(--muted)}
-
-/* CI: Logo oben rechts fixierbar (falls im Layout benötigt) */
-.logo-top-right{
-  position:fixed; top:16px; right:16px; z-index:10;
-}
-
-/* CI: Partielle Kreisform unten links */
+.logo-top-right{position:fixed; top:16px; right:16px; z-index:10}
 .decor-circle{
   position:fixed; left:-120px; bottom:-120px; width:340px; height:340px;
   background:radial-gradient(closest-side, rgba(197,211,1,0.18), rgba(197,211,1,0.08) 55%, transparent 60%);
@@ -82,8 +73,7 @@ body{
 /* Focus (AA+) */
 :where(button, a, input, select, textarea, .pill, .menu-btn, .btn):focus-visible{
   outline:2px solid var(--primary);
-  outline-offset:2px;
-  border-radius:10px;
+  outline-offset:2px;border-radius:10px;
 }
 
 /* Cards / Layout */
@@ -107,6 +97,7 @@ body{
 .row.between{justify-content:space-between}
 .row.end{justify-content:flex-end}
 .wrap{flex-wrap:wrap}
+.grow{flex:1}
 
 /* Toolbar / Fields */
 .toolbar{
@@ -119,10 +110,8 @@ body{
 .field>span{font-size:12px;color:var(--muted)}
 
 input,select,textarea{
-  background:#0f1e33;
-  color:var(--text);
-  border:1px solid var(--border);
-  border-radius:10px;
+  background:#0f1e33;color:var(--text);
+  border:1px solid var(--border);border-radius:10px;
   padding:8px 10px; outline:none; width:100%;
 }
 input::placeholder,textarea::placeholder{color:#90a6bf}
@@ -131,48 +120,36 @@ textarea{resize:vertical}
 /* KPIs / Badges / Pills */
 .kpi{display:grid;place-items:center;min-height:90px}
 .kpi-num{font-size:28px;font-weight:800}
-.badge{
-  display:inline-block;padding:2px 8px;border-radius:999px;
-  border:1px solid var(--border);font-size:12px;color:var(--muted)
-}
-.pill{
-  padding:4px 10px;border-radius:999px;border:1px solid var(--border);
-  background:#0e1d32;cursor:pointer
-}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--border);font-size:12px;color:var(--muted)}
+.pill{padding:4px 10px;border-radius:999px;border:1px solid var(--border);background:#0e1d32;cursor:pointer}
 .pill-on{background:rgba(197,211,1,0.15);border-color:#7e8a05;color:#e9f07a}
 .pill-off{background:#1a1d28;border-color:#3b4760;color:#9fb3c8}
 
 /* Tables */
 .table-wrap{overflow:auto;border:1px solid var(--border);border-radius:12px}
-.table{
-  width:100%;border-collapse:collapse;min-width:720px;
-  background:linear-gradient(180deg, rgba(0,0,0,0.0), rgba(0,0,0,0.02));
-}
-.table th,.table td{
-  padding:10px 12px;border-bottom:1px solid var(--border);text-align:left
-}
+.table{width:100%;border-collapse:collapse;min-width:720px;background:linear-gradient(180deg, rgba(0,0,0,0.0), rgba(0,0,0,0.02))}
+.table th,.table td{padding:10px 12px;border-bottom:1px solid var(--border);text-align:left}
 .table th{font-weight:700;color:#dce9ff;background:#0f1e33}
 .table.small th,.table.small td{padding:8px 10px}
 .table tr:hover td{background:rgba(244,150,17,0.06)}
+input[type="checkbox"]{width:16px;height:16px}
 
 /* Helpers */
 .spacer-8{height:8px}
-.error{
-  background:#281316;border:1px solid #5e2930;color:#ffb4ba;
-  padding:10px;border-radius:10px
-}
+.error{background:#281316;border:1px solid #5e2930;color:#ffb4ba;padding:10px;border-radius:10px}
 .muted{color:var(--muted)}
 .list{list-style:none;margin:0;padding:0;display:grid;gap:8px}
 .list.bulleted{list-style:disc;margin-left:1.25rem;padding-left:1rem}
 .list .strong{font-weight:700}
 .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+.tag{padding:6px 10px;border:1px solid var(--border);background:var(--surface-2);border-radius:10px;color:var(--muted);font-size:12px}
 
-/* CTA Akzent (Brand Claim optional) */
-.brand-claim{
-  font-weight:800; letter-spacing:.3px; text-transform:uppercase;
-  color:var(--primary);
-}
+/* Fehlerliste Bad-Cell */
+.bad{background:#281316;border:1px solid #5e2930}
 
-/* Hover States für Links innerhalb dunkler UI */
+/* CTA Akzent */
+.brand-claim{font-weight:800; letter-spacing:.3px; text-transform:uppercase; color:var(--primary);}
+
+/* Links */
 a{color:var(--primary); text-decoration:none}
 a:hover{text-decoration:underline}
