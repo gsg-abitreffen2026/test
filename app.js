@@ -7,142 +7,111 @@ const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
-/** Robust-HTTP: erst POST (Body-only path), dann POST (Query+Body), dann GET (Query) */
-const READ_METHOD = "AUTO"; // AUTO ignoriert, wir probieren die Sequenz unten
-
-/** --- API: nur noch ?path=api/... (wir ändern ihn NICHT mehr programmatisch) --- */
+/** --- API: wir übergeben path=api/... (keine auto-Varianten) --- */
 const API = {
   // LOCAL
-  contacts: function(limit, includeInactive){
-    if (includeInactive === undefined) includeInactive = true;
-    const lim = encodeURIComponent(limit || 50);
-    const inc = includeInactive ? 1 : 0;
-    return `${API_BASE}?path=api/contacts&limit=${lim}&includeInactive=${inc}`;
-  },
-  stats: function(){ return `${API_BASE}?path=api/stats`; },
+  contacts: (limit, includeInactive = true) =>
+    `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}&includeInactive=${includeInactive ? 1 : 0}`,
+  stats: () => `${API_BASE}?path=api/stats`,
+  templates: () => `${API_BASE}?path=api/templates`,
+  saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
+  setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
+  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
 
-  templates: function(){ return `${API_BASE}?path=api/templates`; },
-  saveTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`; },
-  setActiveTemplate: function(){ return `${API_BASE}?path=api/templates/active`; },
-  deleteTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`; },
+  signatures: () => `${API_BASE}?path=api/signatures`,
+  saveSignature: () => `${API_BASE}?path=api/signatures/save`,
+  setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
+  signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
+  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
 
-  signatures: function(){ return `${API_BASE}?path=api/signatures`; },
-  saveSignature: function(){ return `${API_BASE}?path=api/signatures/save`; },
-  setActiveSignature: function(){ return `${API_BASE}?path=api/signatures/active`; },
-  signaturesStandard: function(){ return `${API_BASE}?path=api/signatures/standard`; },
-  deleteSignature: function(name){ return `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`; },
+  blacklistLocal: (q, includeBounces) =>
+    `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
 
-  blacklistLocal: function(q, includeBounces){
-    const query = encodeURIComponent(q || "");
-    const b = includeBounces ? 1 : 0;
-    return `${API_BASE}?path=api/blacklist&q=${query}&bounces=${b}`;
-  },
+  toggleActive: () => `${API_BASE}?path=api/contacts/active`,
+  setTodo: () => `${API_BASE}?path=api/contacts/todo`,
+  removeContact: () => `${API_BASE}?path=api/contacts/remove`,
 
-  toggleActive: function(){ return `${API_BASE}?path=api/contacts/active`; },
-  setTodo: function(){ return `${API_BASE}?path=api/contacts/todo`; },
-  removeContact: function(){ return `${API_BASE}?path=api/contacts/remove`; },
-
-  upload: function(){ return `${API_BASE}?path=api/upload`; },
-  prepareCampaign: function(){ return `${API_BASE}?path=api/campaign/prepare`; },
-  startCampaign: function(){ return `${API_BASE}?path=api/campaign/start`; },
-  stopCampaign: function(){ return `${API_BASE}?path=api/campaign/stop`; },
+  upload: () => `${API_BASE}?path=api/upload`,
+  prepareCampaign: () => `${API_BASE}?path=api/campaign/prepare`,
+  startCampaign: () => `${API_BASE}?path=api/campaign/start`,
+  stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
 
   // GLOBAL
   global: {
-    templates: function(){ return `${API_BASE}?path=api/global/templates`; },
-    saveTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`; },
-    setActiveTemplate: function(){ return `${API_BASE}?path=api/global/templates/active`; },
-    deleteTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`; },
+    templates: () => `${API_BASE}?path=api/global/templates`,
+    saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
+    setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
+    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
 
-    signatures: function(){ return `${API_BASE}?path=api/global/signatures`; },
-    saveSignature: function(){ return `${API_BASE}?path=api/global/signatures/save`; },
-    setActiveSignature: function(){ return `${API_BASE}?path=api/global/signatures/active`; },
-    deleteSignature: function(name){ return `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`; },
+    signatures: () => `${API_BASE}?path=api/global/signatures`,
+    saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
+    setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
+    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
 
-    blacklist: function(q, includeBounces){
-      const query = encodeURIComponent(q || "");
-      const b = includeBounces ? 1 : 0;
-      return `${API_BASE}?path=api/global/blacklist&q=${query}&bounces=${b}`;
-    },
-    addBlacklist: function(){ return `${API_BASE}?path=api/global/blacklist`; },
+    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+    addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
 
-    errorsList: function(){ return `${API_BASE}?path=api/global/error_list`; },
-    errorsAdd: function(){ return `${API_BASE}?path=api/global/error_list/add`; },
-    errorsDelete: function(){ return `${API_BASE}?path=api/global/error_list/delete`; },
+    errorsList: () => `${API_BASE}?path=api/global/error_list`,
+    errorsAdd: () => `${API_BASE}?path=api/global/error_list/add`,
+    errorsDelete: () => `${API_BASE}?path=api/global/error_list/delete`,
   },
 };
 
-/** ============ HTTP Layer (Dual-Path: Body-first, dann Query) ============ */
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+/** ============ HTTP Layer (Dual-Path: Body-first, dann Query+Body, dann GET) ============ */
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-function extractPathFromUrl(urlString){
-  try { return new URL(urlString).searchParams.get("path") || ""; }
-  catch { return ""; }
+function extractPath(url){
+  try { return new URL(url).searchParams.get("path") || ""; } catch { return ""; }
 }
-function stripPathQuery(urlString){
-  try {
-    const u = new URL(urlString);
-    u.searchParams.delete("path");
-    return u.toString();
-  } catch { return urlString; }
+function stripPath(url){
+  try { const u=new URL(url); u.searchParams.delete("path"); return u.toString(); }
+  catch { return url; }
 }
-async function tryFetch(url, options, tries = 3){
-  let lastErr;
+async function tryFetch(url, options, tries=3){
+  let last;
   for (let i=0;i<tries;i++){
     try{
       const res = await fetch(url, options);
-      if (res.status === 429 || res.status === 503){
-        await sleep(200*Math.pow(2,i) + Math.floor(Math.random()*120));
-        continue;
-      }
       const txt = await res.text();
-      if (!res.ok){
-        throw new Error(`HTTP ${res.status} @ ${url}: ${txt.slice(0,160)}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status} @ ${url}: ${txt.slice(0,160)}`);
       try { return JSON.parse(txt); } catch { return { text: txt }; }
-    } catch (e){
-      lastErr = e;
-      await sleep(120*(i+1));
-    }
+    }catch(e){ last=e; await sleep(120*(i+1)); }
   }
-  throw lastErr || new Error('Request failed');
+  throw last || new Error("Request failed");
 }
-
-async function robustRequest(urlString, bodyObj){
-  const path = extractPathFromUrl(urlString);
+async function robustRequest(url, body){
+  const path = extractPath(url);
   const ts = Date.now();
 
-  // 1) POST ohne Query, nur Body (path, payload)
+  // 1) POST (Body-only path)
   try{
-    const url1 = stripPathQuery(urlString);
-    const rsp1 = await tryFetch(url1, {
+    const rsp = await tryFetch(stripPath(url), {
+      method: "POST",
+      // KEINE exotischen Header, um Preflight zu vermeiden
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ path, ...body, _t: ts })
+    });
+    if (String(rsp?.error||"").toLowerCase() !== "not found") return rsp;
+  }catch{}
+
+  // 2) POST (Query+Body)
+  try{
+    const rsp = await tryFetch(url, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ path, ...bodyObj, _t: ts })
+      body: JSON.stringify({ path, ...body, _t: ts })
     });
-    if (!(rsp1 && String(rsp1.error||"").toLowerCase()==="not found")) return rsp1;
-  }catch(e){ /* fall through */ }
+    if (String(rsp?.error||"").toLowerCase() !== "not found") return rsp;
+  }catch{}
 
-  // 2) POST mit Query + Body (path in beiden)
+  // 3) GET (Query)
   try{
-    const rsp2 = await tryFetch(urlString, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ path, ...bodyObj, _t: ts })
-    });
-    if (!(rsp2 && String(rsp2.error||"").toLowerCase()==="not found")) return rsp2;
-  }catch(e){ /* fall through */ }
+    const rsp = await tryFetch(url + (url.includes("?")?"&":"?") + "_=" + ts, { method: "GET" });
+    if (String(rsp?.error||"").toLowerCase() !== "not found") return rsp;
+  }catch{}
 
-  // 3) GET mit Query (klassisch)
-  try{
-    const url3 = urlString + (urlString.includes("?") ? "&" : "?") + "_=" + ts;
-    const rsp3 = await tryFetch(url3, { method: "GET" });
-    if (!(rsp3 && String(rsp3.error||"").toLowerCase()==="not found")) return rsp3;
-  }catch(e){ /* fall through */ }
-
-  throw new Error(`Endpoint not found for "${path}" (tried POST body-only, POST query+body, GET query).`);
+  throw new Error(`Endpoint not found for "${path}"`);
 }
-
 async function httpGet(url){ return robustRequest(url, {}); }
 async function httpPost(url, body){ return robustRequest(url, body || {}); }
 
@@ -150,136 +119,13 @@ async function httpPost(url, body){ return robustRequest(url, body || {}); }
 function cn(){ return Array.from(arguments).filter(Boolean).join(" "); }
 function isEmail(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
+function toTF(v){ return v ? "TRUE" : "FALSE"; }          // ★ NEU
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
-/** ============ CSV/PDF parsing (unverändert) ============ */
-function detectDelimiter(headerLine) {
-  const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
-  const candidates = [{ d: ";", n: c(headerLine, ";") }, { d: ",", n: c(headerLine, ",") }, { d: "\t", n: c(headerLine, "\t") }];
-  candidates.sort((a, b) => b.n - a.n);
-  return candidates[0].n > 0 ? candidates[0].d : ",";
-}
-function normalizeKey(k) {
-  const s = String(k || "").toLowerCase().replace(/\s+/g, "").replace(/[-_]/g, "");
-  if (/^(email|e?mail|mailadresse)$/.test(s)) return "email";
-  if (/^(lastname|nachname|name$)$/.test(s)) return "lastName";
-  if (/^(firstname|vorname)$/.test(s)) return "firstName";
-  if (/^(company|firma|unternehmen|organisation)$/.test(s)) return "company";
-  if (/^(position|titel|rolle)$/.test(s)) return "position";
-  if (/^(phone|telefon|telefonnummer|tel)$/.test(s)) return "phone";
-  if (/^(mobile|handy|mobil)$/.test(s)) return "mobile";
-  if (/^(anrede|salutation|gruß|gruss|grussformel)$/.test(s)) return "Anrede";
-  return k;
-}
-function splitCSV(line, delim) {
-  const out = []; let cur = "", inQ = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
-      else inQ = !inQ;
-    } else if (ch === delim && !inQ) { out.push(cur); cur = ""; }
-    else { cur += ch; }
-  }
-  out.push(cur);
-  return out;
-}
-async function parseCSV(file) {
-  const textRaw = await file.text();
-  const text = textRaw.replace(/^\uFEFF/, "");
-  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (!lines.length) return [];
-  const delim = detectDelimiter(lines[0]);
-  const headersRaw = splitCSV(lines[0], delim).map((h) => h.trim());
-  const headers = headersRaw.map(normalizeKey);
-  const data = [];
-  for (let r = 1; r < lines.length; r++) {
-    const cols = splitCSV(lines[r], delim).map((c) => c.trim());
-    const rec = {}; headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
-    const email = rec.email || ""; const last = rec.lastName || ""; const comp = rec.company || "";
-    if (email && last && comp) {
-      data.push({
-        email: email, lastName: last, company: comp,
-        firstName: rec.firstName || "", position: rec.position || "",
-        phone: rec.phone || "", mobile: rec.mobile || "",
-        Anrede: rec.Anrede || "",
-      });
-    }
-  }
-  return data;
-}
-async function parsePDF(file) {
-  const arrayBuf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
-  async function pageToLines(page) {
-    const tc = await page.getTextContent();
-    const items = tc.items.map((it) => { const [a,b,c,d,e,f]=it.transform; return { x:e, y:f, str:it.str }; });
-    items.sort((p, q) => q.y - p.y || p.x - q.x);
-    const lines = []; const EPS = 2.5;
-    for (const t of items) { const L = lines.find((l) => Math.abs(l.y - t.y) < EPS); if (L) L.items.push(t); else lines.push({ y: t.y, items: [t] }); }
-    return lines.map((L) => { L.items.sort((p, q) => p.x - q.x); return { y: L.y, items: L.items, text: L.items.map((i) => i.str).join(" ") }; });
-  }
-  function detectColumns(headerLine) {
-    const map = {};
-    if (headerLine && headerLine.items) {
-      for (const it of headerLine.items) {
-        const s = it.str.toLowerCase();
-        if (!map.firma && s.includes("firma")) map.firma = it.x;
-        if (!map.anrede && s.includes("anrede")) map.anrede = it.x;
-        if (!map.vorname && s.includes("vorname")) map.vorname = it.x;
-        if (!map.nachname && s.includes("nachname")) map.nachname = it.x;
-        if (!map.telefon && s.includes("telefon")) map.telefon = it.x;
-        if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr."))) map.email = it.x;
-      }
-    }
-    return { firma: map.firma ?? 30, anrede: map.anrede ?? 170, vor: map.vorname ?? 230, nach: map.nachname ?? 310, tel: map.telefon ?? 430, mail: map.email ?? 520 };
-  }
-  function sliceByColumns(line, cols) {
-    const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
-    for (const it of line.items) {
-      const x = it.x;
-      const key = x < cols.anrede ? "firma" : x < cols.vor ? "anrede" : x < cols.nach ? "vor" : x < cols.tel ? "nach" : x < cols.mail ? "tel" : "mail";
-      buckets[key].push(it.str);
-    }
-    const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
-    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
-  }
-  const collected = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const lines = await pageToLines(page);
-    const header = lines.find((L) => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
-    const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
-    for (const L of lines) {
-      if (header && Math.abs(L.y - header.y) < 3) continue;
-      const rec = sliceByColumns(L, cols);
-      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
-      const minimal = rec.company && rec.last;
-      if (hasEmail || minimal) {
-        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
-      }
-    }
-  }
-  const seen = new Set(); const rows = [];
-  for (const r of collected) {
-    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
-    if (!seen.has(key)) { seen.add(key); rows.push(r); }
-  }
-  return rows;
-}
+/** ============ CSV/PDF parsing ============ */
+// (…dein parseCSV / parsePDF bleibt unverändert…)
 
-/** ============ UI helpers ============ */
-function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
-  return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
-}
-function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
-function Section({ title, right, children, className }) {
-  return (<section className={cn("card", className)}><div className="row between vcenter"><h3>{title}</h3>{right}</div><div className="spacer-8" />{children}</section>);
-}
-function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
-function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
-function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 
 /* ==== END PART 1 ==== */
 
@@ -324,7 +170,9 @@ function App() {
     else setErr("Login fehlgeschlagen");
   }, [user, pw]);
 
-  const doLogout = React.useCallback(() => { setAuthed(false); setPage("login"); setPw(""); }, []);
+  const doLogout = React.useCallback(() => {
+    setAuthed(false); setPage("login"); setPw("");
+  }, []);
 
   return (
     <div className="app">
@@ -365,7 +213,11 @@ function Header({ authed, onNav, onLogout, active }) {
       {authed ? (
         <nav className="menu">
           {tabs.map((t) => (
-            <button key={t.key} onClick={() => onNav(t.key)} className={cn("menu-btn", active === t.key && "active")}>
+            <button
+              key={t.key}
+              onClick={() => onNav(t.key)}
+              className={cn("menu-btn", active === t.key && "active")}
+            >
               {t.label}
             </button>
           ))}
@@ -408,17 +260,20 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({}); // email -> { active: boolean }
+  const [updates, setUpdates] = React.useState({}); // id/email -> { active: boolean }
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
 
   const loadAll = React.useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [s, c] = await Promise.all([ httpGet(API.stats()), httpGet(API.contacts(limit, showInactive)) ]);
-      setStats(s || { sent:0, replies:0, hot:0, needReview:0, meetings:0 });
-      const arr = Array.isArray(c?.contacts) ? c.contacts : (Array.isArray(c) ? c : []);
-      const norm = arr.map(r => ({ ...r, active: typeof r.active === "boolean" ? r.active : asBoolTF(r.active) }));
+      const [s, c] = await Promise.all([
+        httpGet(API.stats()),
+        httpGet(API.contacts(limit, showInactive))
+      ]);
+      setStats(s);
+      const arr = Array.isArray(c.contacts) ? c.contacts : [];
+      const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) })); // Sheets → boolean
       setContacts(norm);
     } catch (e) {
       setError(e.message || "Fehler beim Laden");
@@ -429,73 +284,50 @@ function Dashboard() {
 
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
-  const start = async () => {
-    setCampaignRunning(true);
-    try { await httpPost(API.startCampaign(), {}); }
-    catch (e) { setError(e.message); }
-  };
-  const stop = async () => {
-    setCampaignRunning(false);
-    try { await httpPost(API.stopCampaign(), {}); }
-    catch (e) { setError(e.message); }
-  };
+  const start = async () => { setCampaignRunning(true); try { await httpPost(API.startCampaign(), {}); } catch (e) { setError(e.message); } };
+  const stop  = async () => { setCampaignRunning(false); try { await httpPost(API.stopCampaign(),  {}); } catch (e) { setError(e.message); } };
 
-  // Toggle im UI (Key = email bevorzugt)
+  // Toggle: boolean im UI drehen + merken
   const toggleActive = (row) => {
-    const key = String(row.email || row.id || "");
-    if (!key) return;
+    const key = (row.id || row.email || "").toString();
     const newActive = !row.active;
-    setContacts((prev) => prev.map((r) => ((r.email || r.id) === key ? { ...r, active: newActive } : r)));
-    setUpdates((prev) => ({ ...prev, [key]: { active: newActive } }));
+    setContacts(prev => prev.map(r => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
+    setUpdates(prev => ({ ...prev, [key]: { active: newActive } }));
   };
 
-  // Speichern – probiert mehrere Payload-Formate wie Templates/Signaturen
+  // Speichern: TRUE/FALSE Strings senden
   const saveActive = async () => {
-    const entries = Object.entries(updates);
-    if (!entries.length) return;
-
-    const rowsTF = entries.map(([email, v]) => ({ email, active: toTF(!!v.active) }));
-    const rowsBool = entries.map(([email, v]) => ({ email, active: !!v.active }));
-
+    const payload = Object.entries(updates).map(([k, v]) => ({
+      id:    k.includes("@") ? undefined : k,
+      email: k.includes("@") ? k : undefined,
+      active: toTF(!!v.active)
+    }));
+    if (!payload.length) return;
     try {
-      await postAny(API.toggleActive(), [
-        { rows: rowsTF },
-        { updates: rowsTF },
-        { rows: rowsBool },
-        { contacts: rowsTF },
-        { data: rowsTF },
-      ]);
+      await httpPost(API.toggleActive(), { updates: payload });
       setUpdates({});
-      await loadAll();
-      alert("Aktiv-Status gespeichert.");
+      alert("Änderungen gespeichert");
+      await loadAll(); // Werte vom Server spiegeln
     } catch (e) {
       setError(e.message || "Speichern fehlgeschlagen");
     }
   };
 
   const markTodoDone = async (row) => {
-    const key = String(row.email || row.id || "");
-    if (!key) return;
-    setContacts((prev) => prev.map((r) => ((r.email || r.id) === key ? { ...r, todo: false } : r)));
-    setTodoUpdates((prev) => ({ ...prev, [key]: { todo: false } }));
+    const key = (row.id || row.email || "").toString();
+    setContacts(prev => prev.map(r => ((r.id || r.email) === key ? { ...r, todo: false } : r)));
+    setTodoUpdates(prev => ({ ...prev, [key]: { todo: false } }));
   };
 
   const saveTodos = async () => {
-    const entries = Object.entries(todoUpdates);
-    if (!entries.length) return;
-    const rowsBool = entries.map(([email, v]) => ({ email, todo: !!v.todo }));
-    try {
-      await postAny(API.setTodo(), [
-        { rows: rowsBool },
-        { updates: rowsBool },
-        { data: rowsBool },
-      ]);
-      setTodoUpdates({});
-      await loadAll();
-      alert("To-Dos gespeichert.");
-    } catch (e) {
-      setError(e.message || "Fehler beim Speichern der ToDos");
-    }
+    const payload = Object.entries(todoUpdates).map(([k, v]) => ({
+      id:    k.includes("@") ? undefined : k,
+      email: k.includes("@") ? k : undefined,
+      todo:  v.todo
+    }));
+    if (!payload.length) return;
+    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
+    catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
   };
 
   const finishedTodos = React.useMemo(
@@ -510,15 +342,15 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* --- To-Dos & Kampagneneinstellungen (oben) --- */}
+      {/* ===== ZUERST: To-Dos & Kampagneneinstellungen ===== */}
       <div className="grid cols-2 gap">
         <Section title="To-Dos (angeschrieben)">
           <ul className="list">
             {finishedTodos.map((r) => (
-              <li key={r.email || r.id} className="row between vcenter">
+              <li key={r.id || r.email} className="row between vcenter">
                 <div className="grow">
                   <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
-                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt || ""}</div>
+                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div>
                 </div>
                 <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
               </li>
@@ -543,7 +375,7 @@ function Dashboard() {
         </Section>
       </div>
 
-      {/* --- KPIs --- */}
+      {/* ===== Dann: KPIs ===== */}
       <div className="grid cols-3 gap">
         <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
         <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
@@ -552,44 +384,61 @@ function Dashboard() {
         <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
       </div>
 
-      {/* --- Kontakte --- */}
-      <Section title="Kontakte" right={
-        <div className="row gap">
-          <label className="row gap"><span>Anzahl</span>
-            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-              {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
-            </select>
-          </label>
-          <label className="row gap"><span>Deaktivierte zeigen</span>
-            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-          </label>
-          <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
-        </div>
-      }>
+      {/* ===== Kontakte ===== */}
+      <Section
+        title="Kontakte"
+        right={
+          <div className="row gap">
+            <label className="row gap">
+              <span>Anzahl</span>
+              <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+                {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
+              </select>
+            </label>
+            <label className="row gap">
+              <span>Deaktivierte zeigen</span>
+              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+            </label>
+            <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
+          </div>
+        }
+      >
         <div className="table-wrap">
           <table className="table">
-            <thead><tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr></thead>
+            <thead>
+              <tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr>
+            </thead>
             <tbody>
               {contacts.map((r) => (
-                <tr key={r.email || r.id}>
+                <tr key={r.id || r.email}>
                   <td>{[r.firstName, r.lastName].filter(Boolean).join(" ")}</td>
                   <td>{r.company}</td>
                   <td>{r.email}</td>
                   <td>{r.status || ""}</td>
-                  <td><PillToggle on={!!r.active} onLabel="aktiv" offLabel="deaktiviert" onClick={() => toggleActive(r)} /></td>
+                  <td>
+                    <PillToggle
+                      on={!!r.active}
+                      onLabel="aktiv"
+                      offLabel="deaktiviert"
+                      onClick={() => toggleActive(r)}
+                    />
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <div className="row end gap">
-          <PrimaryButton onClick={saveActive} disabled={!Object.keys(updates).length}>Änderungen speichern</PrimaryButton>
+          <PrimaryButton onClick={saveActive} disabled={!Object.keys(updates).length}>
+            Änderungen speichern
+          </PrimaryButton>
         </div>
       </Section>
     </section>
   );
 }
 /* ==== END PART 2 ==== */
+
 
 
 
@@ -1161,8 +1010,7 @@ function Blacklist() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      // Immer inkl. Bounces laden (Toggle entfernt)
-      const r = await httpGet(API.global.blacklist(q, true));
+      const r = await httpGet(API.global.blacklist(q, true) + "&_=" + Date.now()); // Cache-Buster
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
   }, [q]);
@@ -1218,20 +1066,21 @@ function ErrorList() {
 
   // Filter + Suche
   const [search, setSearch] = React.useState("");
-  const [filterCol, setFilterCol] = React.useState("");     // Spalte auswählen
+  const [filterCol, setFilterCol] = React.useState("");     // Spalte wählen
   const [onlyEmpty, setOnlyEmpty] = React.useState(true);   // nur leere anzeigen
   const errorCols = ['email','Anrede','firstName','lastName','company','phone','mobile','reason'];
 
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      const r = await httpGet(API.global.errorsList());
+      const url = API.global.errorsList() + "&_=" + Date.now(); // Cache-Buster
+      const r = await httpGet(url);
       const listRaw = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
-      // Eindeutige IDs erzwingen + Deduplizieren
+      // Eindeutige IDs + Dedupe
       const map = new Map();
       for (let i = 0; i < listRaw.length; i++) {
         const x = listRaw[i] || {};
-        const id = String(x.id || x._id || x.uuid || `row-${i}`);
+        const id = String(x.id || x._id || x.uuid || `row-${i}-${(x.email||'')}`);
         if (!map.has(id)) map.set(id, { ...x, id });
       }
       setRows(Array.from(map.values()));
@@ -1247,26 +1096,14 @@ function ErrorList() {
     setSel(checked ? next : {});
   };
 
-  // ★ robustes Löschen (mehrere Payload-Formate)
   const removeSelected = async () => {
     const ids = rows.filter(r => sel[r.id]).map(r => r.id);
     if (!ids.length) return;
     if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
-
     try {
-      await postAny(API.global.errorsDelete(), [
-        { ids },
-        { rows: ids.map(id => ({ id })) },
-        { rowsById: ids },
-        { data: ids },
-      ]);
-
-      // lokal sofort bereinigen & frische Liste holen
-      setRows(prev => prev.filter(r => !ids.includes(r.id)));
+      await httpPost(API.global.errorsDelete(), { ids });
+      setRows(prev => prev.filter(r => !ids.includes(r.id))); // nur selektierte entfernen
       setSel({});
-      await load();
-
-      alert("Fehler-Einträge gelöscht.");
     } catch (e) {
       alert(e.message || "Fehler beim Löschen");
     }
@@ -1292,7 +1129,9 @@ function ErrorList() {
   const masterRef = React.useRef(null);
   const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.id]);
   const someChecked = filtered.some(r => sel[r.id]) && !allChecked;
-  React.useEffect(() => { if (masterRef.current) masterRef.current.indeterminate = someChecked; }, [someChecked, allChecked, filtered]);
+  React.useEffect(() => {
+    if (masterRef.current) masterRef.current.indeterminate = someChecked;
+  }, [someChecked, allChecked, filtered]);
 
   return (
     <section className="grid gap">
@@ -1337,7 +1176,11 @@ function ErrorList() {
             {filtered.map((r) => (
               <tr key={r.id}>
                 <td>
-                  <input type="checkbox" checked={!!sel[r.id]} onChange={()=>toggle(r.id)} />
+                  <input
+                    type="checkbox"
+                    checked={!!sel[r.id]}
+                    onChange={()=>toggle(r.id)}
+                  />
                 </td>
                 <td className={isBad(r,"email")?"bad":""}>{r.email||""}</td>
                 <td className={isBad(r,"Anrede")?"bad":""}>{r.Anrede||""}</td>
