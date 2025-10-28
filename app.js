@@ -1,4 +1,5 @@
-// ===== avus smart-cap Dashboard (globals, API, helpers) =====
+/* ==== PART 1 ==== */
+// ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
 /** =====================
@@ -49,8 +50,7 @@ const API = {
     setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
     deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
 
-    blacklist: (q, includeBounces) =>
-      `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
 
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
@@ -59,52 +59,55 @@ const API = {
   },
 };
 
-// --- HTTP mit Retry/Backoff; Reads als POST (kein Preflight) ---
+/** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
-// Steps clamp 1..5
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
+// ---- CACHE BUSTER ----
+function withTs(url){
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}_=${Date.now()}`;
+}
+
+// --- HTTP (Retry/Backoff, no-cache, POST for reads to avoid preflight) ---
 async function fetchWithRetry(url, options = {}, tries = 5) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(url, options);
+      const res = await fetch(url, {
+        ...options,
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Pragma": "no-cache",
+          ...(options.headers || {})
+        }
+      });
       if (res.status === 429 || res.status === 503) {
         const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
-        await sleep(wait);
-        continue;
+        await sleep(wait); continue;
       }
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0,120)}`);
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0,150)}`);
       }
       const txt = await res.text();
       try { return JSON.parse(txt); } catch { return { text: txt }; }
     } catch (err) {
-      lastErr = err;
-      await sleep(150 * (i + 1));
+      lastErr = err; await sleep(150 * (i + 1));
     }
   }
   throw lastErr || new Error(`Request failed: ${url}`);
 }
-
 async function httpGet(url) {
-  return fetchWithRetry(url, {
-    method: "GET",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-  });
+  return fetchWithRetry(withTs(url), { method: "POST", body: "" });
 }
-
 async function httpPost(url, body) {
-  return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(body || {}),
-  });
+  return fetchWithRetry(withTs(url), { method: "POST", body: JSON.stringify(body || {}) });
 }
 
 /** ============ CSV/PDF parsing ============ */
@@ -143,58 +146,101 @@ function splitCSV(line, delim) {
   out.push(cur);
   return out;
 }
+async function parseCSV(file) {
+  const textRaw = await file.text();
+  const text = textRaw.replace(/^\uFEFF/, "");
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (!lines.length) return [];
+  const delim = detectDelimiter(lines[0]);
+  const headersRaw = splitCSV(lines[0], delim).map((h) => h.trim());
+  const headers = headersRaw.map(normalizeKey);
+  const data = [];
+  for (let r = 1; r < lines.length; r++) {
+    const cols = splitCSV(lines[r], delim).map((c) => c.trim());
+    const rec = {}; headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
+    const email = rec.email || ""; const last = rec.lastName || ""; const comp = rec.company || "";
+    if (email && last && comp) {
+      data.push({
+        email: email, lastName: last, company: comp,
+        firstName: rec.firstName || "", position: rec.position || "",
+        phone: rec.phone || "", mobile: rec.mobile || "",
+        Anrede: rec.Anrede || "",
+      });
+    }
+  }
+  return data;
+}
+async function parsePDF(file) {
+  const arrayBuf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+  async function pageToLines(page) {
+    const tc = await page.getTextContent();
+    const items = tc.items.map((it) => { const [a,b,c,d,e,f]=it.transform; return { x:e, y:f, str:it.str }; });
+    items.sort((p, q) => q.y - p.y || p.x - q.x);
+    const lines = []; const EPS = 2.5;
+    for (const t of items) { const L = lines.find((l) => Math.abs(l.y - t.y) < EPS); if (L) L.items.push(t); else lines.push({ y: t.y, items: [t] }); }
+    return lines.map((L) => { L.items.sort((p, q) => p.x - q.x); return { y: L.y, items: L.items, text: L.items.map((i) => i.str).join(" ") }; });
+  }
+  function detectColumns(headerLine) {
+    const map = {};
+    if (headerLine && headerLine.items) {
+      for (const it of headerLine.items) {
+        const s = it.str.toLowerCase();
+        if (!map.firma && s.includes("firma")) map.firma = it.x;
+        if (!map.anrede && s.includes("anrede")) map.anrede = it.x;
+        if (!map.vorname && s.includes("vorname")) map.vorname = it.x;
+        if (!map.nachname && s.includes("nachname")) map.nachname = it.x;
+        if (!map.telefon && s.includes("telefon")) map.telefon = it.x;
+        if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr."))) map.email = it.x;
+      }
+    }
+    return { firma: map.firma ?? 30, anrede: map.anrede ?? 170, vor: map.vorname ?? 230, nach: map.nachname ?? 310, tel: map.telefon ?? 430, mail: map.email ?? 520 };
+  }
+  function sliceByColumns(line, cols) {
+    const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
+    for (const it of line.items) {
+      const x = it.x;
+      const key = x < cols.anrede ? "firma" : x < cols.vor ? "anrede" : x < cols.nach ? "vor" : x < cols.tel ? "nach" : x < cols.mail ? "tel" : "mail";
+      buckets[key].push(it.str);
+    }
+    const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
+    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
+  }
+  const collected = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const lines = await pageToLines(page);
+    const header = lines.find((L) => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
+    const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
+    for (const L of lines) {
+      if (header && Math.abs(L.y - header.y) < 3) continue;
+      const rec = sliceByColumns(L, cols);
+      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
+      const minimal = rec.company && rec.last;
+      if (hasEmail || minimal) {
+        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
+      }
+    }
+  }
+  const seen = new Set(); const rows = [];
+  for (const r of collected) {
+    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); rows.push(r); }
+  }
+  return rows;
+}
 
-/** ============ UI helpers ============ */
+/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
-  return (
-    <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>
-      {on ? onLabel : offLabel}
-    </button>
-  );
+  return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
 }
-
-function Toolbar({ children }) {
-  return <div className="toolbar">{children}</div>;
-}
-
+function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
 function Section({ title, right, children, className }) {
-  return (
-    <section className={cn("card", className)}>
-      <div className="row between vcenter">
-        <h3>{title}</h3>
-        {right}
-      </div>
-      <div className="spacer-8" />
-      {children}
-    </section>
-  );
+  return (<section className={cn("card", className)}><div className="row between vcenter"><h3>{title}</h3>{right}</div><div className="spacer-8" />{children}</section>);
 }
-
-function Field({ label, children }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
-function TextButton({ children, onClick, disabled }) {
-  return (
-    <button className="btn" onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  );
-}
-
-function PrimaryButton({ children, onClick, disabled }) {
-  return (
-    <button className="btn primary" onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  );
-}
-
+function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
+function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
+function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 /* ==== END PART 1 ==== */
 
 
@@ -330,7 +376,7 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({});      // id/email -> { active: boolean }
+  const [updates, setUpdates] = React.useState({}); // id/email -> { active: boolean }
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
 
@@ -341,61 +387,82 @@ function Dashboard() {
         httpGet(API.stats()),
         httpGet(API.contacts(limit, showInactive))
       ]);
-      setStats(s || { sent:0, replies:0, hot:0, needReview:0, meetings:0 });
-      const arr = Array.isArray(c?.contacts) ? c.contacts : [];
+      setStats(s);
+      const arr = Array.isArray(c.contacts) ? c.contacts : [];
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
       setContacts(norm);
-    } catch (e) { setError(e.message || "Fehler beim Laden"); }
-    finally { setLoading(false); }
+    } catch (e) {
+      setError(e.message || "Fehler beim Laden");
+    } finally {
+      setLoading(false);
+    }
   }, [limit, showInactive]);
+
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
-  // Kampagne
   const start = async () => {
-    try { await httpPost(API.startCampaign(), { per_day: perDay }); setCampaignRunning(true); }
-    catch (e) { setError(e.message || "Start fehlgeschlagen"); }
+    setCampaignRunning(true);
+    try { await httpPost(API.startCampaign(), {}); }
+    catch (e) { setError(e.message); }
   };
   const stop = async () => {
-    try { await httpPost(API.stopCampaign(), {}); setCampaignRunning(false); }
-    catch (e) { setError(e.message || "Stop fehlgeschlagen"); }
+    setCampaignRunning(false);
+    try { await httpPost(API.stopCampaign(), {}); }
+    catch (e) { setError(e.message); }
   };
 
-  // Active togglen & speichern (Backend erwartet "TRUE"/"FALSE")
+  // Toggle (UI)
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
     const newActive = !row.active;
-    setContacts(prev => prev.map(r => ((r.id||r.email)===key ? { ...r, active:newActive } : r)));
-    setUpdates(prev => ({ ...prev, [key]: { active:newActive } }));
-  };
-  const saveActive = async () => {
-    const payload = Object.entries(updates).map(([k,v]) => ({
-      id: k.includes("@") ? undefined : k,
-      email: k.includes("@") ? k : undefined,
-      active: v.active ? "TRUE" : "FALSE",
-    }));
-    if (!payload.length) return;
-    try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); await loadAll(); }
-    catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
+    setContacts(prev => prev.map(r =>
+      ((r.id || r.email) === key) ? { ...r, active: newActive } : r
+    ));
+    setUpdates(prev => ({ ...prev, [key]: { active: newActive } }));
   };
 
-  // ToDos
-  const markTodoDone = (row) => {
-    const key = (row.id || row.email || "").toString();
-    setContacts(prev => prev.map(r => ((r.id||r.email)===key ? { ...r, todo:false } : r)));
-    setTodoUpdates(prev => ({ ...prev, [key]: { todo:false } }));
+  // Save → "TRUE"/"FALSE" + Reload + Feedback
+  const saveActive = async () => {
+    const payload = Object.entries(updates).map(([k, v]) => ({
+      id: k.includes("@") ? undefined : k,
+      email: k.includes("@") ? k : undefined,
+      active: v.active ? "TRUE" : "FALSE"
+    }));
+    if (!payload.length) return;
+
+    try {
+      await httpPost(API.toggleActive(), { updates: payload });
+      setUpdates({});
+      await loadAll();
+      alert("Änderungen gespeichert.");
+    } catch (e) {
+      console.error(e);
+      alert(e.message || "Speichern fehlgeschlagen");
+    }
   };
+
+  const markTodoDone = async (row) => {
+    const key = (row.id || row.email || "").toString();
+    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, todo: false } : r)));
+    setTodoUpdates((prev) => ({ ...prev, [key]: { todo: false } }));
+  };
+
   const saveTodos = async () => {
-    const payload = Object.entries(todoUpdates).map(([k,v]) => ({
+    const payload = Object.entries(todoUpdates).map(([k, v]) => ({
       id: k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
       todo: v.todo
     }));
     if (!payload.length) return;
-    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); await loadAll(); }
+    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
     catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
   };
+
   const finishedTodos = React.useMemo(
-    () => contacts.filter(r => asBoolTF(r.finished) && asBoolTF(r.todo)),
+    () => contacts.filter((r) =>
+      String(r.finished).toUpperCase() === "TRUE" &&
+      String(r.todo).toUpperCase() === "TRUE"
+    ),
     [contacts]
   );
 
@@ -407,27 +474,27 @@ function Dashboard() {
       <div className="grid cols-2 gap">
         <Section title="To-Dos (angeschrieben)">
           <ul className="list">
-            {finishedTodos.map(r => (
+            {finishedTodos.map((r) => (
               <li key={r.id || r.email} className="row between vcenter">
                 <div className="grow">
                   <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
-                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt || ""}</div>
-                  {r.phone && <a className="btn link" href={`tel:${r.phone}`}>Tel. anrufen</a>}
+                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div>
                 </div>
                 <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
               </li>
             ))}
-            {!finishedTodos.length && <li className="muted">Keine To-Dos.</li>}
           </ul>
           <div className="row end">
-            <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>Änderungen speichern</PrimaryButton>
+            <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>
+              Änderungen speichern
+            </PrimaryButton>
           </div>
         </Section>
 
         <Section title="Kampagneneinstellungen">
           <div className="grid gap">
             <Field label="Sendouts pro Tag">
-              <input type="number" min="0" value={perDay} onChange={(e)=>setPerDay(Number(e.target.value||0))} />
+              <input type="number" min="0" value={perDay} onChange={(e) => setPerDay(Number(e.target.value || 0))} />
             </Field>
             <div className="row gap">
               <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
@@ -455,12 +522,12 @@ function Dashboard() {
             <label className="row gap">
               <span>Anzahl</span>
               <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-                {[10,25,50,75,100,150,200].map(n => <option key={n} value={n}>{n}</option>)}
+                {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
               </select>
             </label>
             <label className="row gap">
               <span>Deaktivierte zeigen</span>
-              <input type="checkbox" checked={showInactive} onChange={(e)=>setShowInactive(e.target.checked)} />
+              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
             </label>
             <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
           </div>
@@ -472,7 +539,7 @@ function Dashboard() {
               <tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr>
             </thead>
             <tbody>
-              {contacts.map(r => (
+              {contacts.map((r) => (
                 <tr key={r.id || r.email}>
                   <td>{[r.firstName, r.lastName].filter(Boolean).join(" ")}</td>
                   <td>{r.company}</td>
@@ -483,14 +550,11 @@ function Dashboard() {
                       on={!!r.active}
                       onLabel="aktiv"
                       offLabel="deaktiviert"
-                      onClick={()=>toggleActive(r)}
+                      onClick={() => toggleActive(r)}
                     />
                   </td>
                 </tr>
               ))}
-              {!contacts.length && (
-                <tr><td colSpan="5" className="muted">Keine Daten geladen.</td></tr>
-              )}
             </tbody>
           </table>
         </div>
@@ -503,11 +567,7 @@ function Dashboard() {
     </section>
   );
 }
-
-
 /* ==== END PART 2 ==== */
-
-
 
 
 
@@ -1078,7 +1138,8 @@ function Blacklist() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      const r = await httpGet(API.global.blacklist(q, true)); // immer inkl. Bounces
+      // immer inklusive Bounces laden
+      const r = await httpGet(API.global.blacklist(q, true));
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
   }, [q]);
@@ -1129,9 +1190,10 @@ function Blacklist() {
 /** ============ ERROR LIST (GLOBAL PAGE) ============ */
 function ErrorList() {
   const [rows, setRows] = React.useState([]);
-  const [sel, setSel] = React.useState({}); // clientKey -> true
+  const [sel, setSel] = React.useState({}); // id -> true
   const [err, setErr] = React.useState("");
 
+  // Filter + Suche
   const [search, setSearch] = React.useState("");
   const [filterCol, setFilterCol] = React.useState("");
   const [onlyEmpty, setOnlyEmpty] = React.useState(true);
@@ -1140,24 +1202,44 @@ function ErrorList() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      const r = await httpGet(API.global.errorsList());
+      const r = await httpGet(API.global.errorsList()); // httpGet hängt TS an
       const listRaw = Array.isArray(r?.rows) ? r.rows : (Array.isArray(r) ? r : []);
-      const list = listRaw.map((x, i) => {
-        const serverId = x.id || x._id || null;
-        const clientKey = serverId ? `s-${serverId}` : `c-${i}-${(x.email||'')}-${(x.company||'')}`;
-        return { ...x, id: serverId, __clientKey: clientKey };
-      });
-      // eindeutige clientKeys sicherstellen
-      const dedup = [];
-      const seen = new Set();
-      for (const r of list) { if (!seen.has(r.__clientKey)) { seen.add(r.__clientKey); dedup.push(r); } }
-      setRows(dedup);
-      setSel({});
+      // dedupe + stabile IDs
+      const map = new Map();
+      for (let i = 0; i < listRaw.length; i++) {
+        const x = listRaw[i] || {};
+        const id = String(x.id || x._id || x.uuid || `row-${i}-${(x.email||"")}`);
+        if (!map.has(id)) map.set(id, { ...x, id });
+      }
+      setRows(Array.from(map.values()));
     } catch (e) { setErr(e.message || "Fehler"); }
   }, []);
   React.useEffect(() => { load(); }, [load]);
 
-  const toggle = (ckey) => setSel(prev => ({ ...prev, [ckey]: !prev[ckey] }));
+  const toggle = (id) => setSel(prev => ({ ...prev, [id]: !prev[id] }));
+  const toggleAll = (checked) => {
+    if (!rows.length) return;
+    const next = {};
+    if (checked) rows.forEach(r => next[r.id] = true);
+    setSel(checked ? next : {});
+  };
+
+  const removeSelected = async () => {
+    const ids = rows.filter(r => sel[r.id]).map(r => r.id);
+    if (!ids.length) return;
+    if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
+    try {
+      await httpPost(API.global.errorsDelete(), { ids });
+      setSel({});
+      await load(); // echte frische Liste vom Server
+    } catch (e) { alert(e.message || "Fehler beim Löschen"); }
+  };
+
+  const isBad = (row, key) => {
+    if (["email","Anrede","firstName","lastName","company"].includes(key)) return !row[key];
+    if (key === "phoneOrMobile") return !(row.phone || row.mobile);
+    return false;
+  };
 
   const filtered = React.useMemo(() => {
     const s = (search || "").toLowerCase();
@@ -1171,35 +1253,11 @@ function ErrorList() {
   }, [rows, search, filterCol, onlyEmpty]);
 
   const masterRef = React.useRef(null);
-  const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.__clientKey]);
-  const someChecked = filtered.some(r => sel[r.__clientKey]) && !allChecked;
+  const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.id]);
+  const someChecked = filtered.some(r => sel[r.id]) && !allChecked;
   React.useEffect(() => {
     if (masterRef.current) masterRef.current.indeterminate = someChecked;
   }, [someChecked, allChecked, filtered]);
-
-  const toggleAll = (checked) => {
-    const next = {};
-    if (checked) filtered.forEach(r => { if (r.id) next[r.__clientKey] = true; }); // nur echte IDs
-    setSel(checked ? next : {});
-  };
-
-  const removeSelected = async () => {
-  const ids = rows.filter(r => sel[r.id]).map(r => r.id);
-  if (!ids.length) return;
-  if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
-  try {
-    await httpPost(API.global.errorsDelete(), { ids });
-    setSel({});
-    await load(); // ← Server-Truth neu holen (statt lokal filtern)
-  } catch (e) { alert(e.message || "Fehler beim Löschen"); }
-};
-
-
-  const isBad = (row, key) => {
-    if (["email","Anrede","firstName","lastName","company"].includes(key)) return !row[key];
-    if (key === "phoneOrMobile") return !(row.phone || row.mobile);
-    return false;
-  };
 
   return (
     <section className="grid gap">
@@ -1216,7 +1274,7 @@ function ErrorList() {
           nur leere anzeigen
         </label>
         <TextButton onClick={load}>Neu laden</TextButton>
-        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.__clientKey] && r.id)}>
+        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>
           Erledigt (löschen)
         </PrimaryButton>
       </Toolbar>
@@ -1244,14 +1302,12 @@ function ErrorList() {
           </thead>
           <tbody>
             {filtered.map((r) => (
-              <tr key={r.__clientKey}>
+              <tr key={r.id}>
                 <td>
                   <input
                     type="checkbox"
-                    checked={!!sel[r.__clientKey]}
-                    onChange={()=>toggle(r.__clientKey)}
-                    disabled={!r.id}
-                    title={!r.id ? "Eintrag ohne Server-ID – kann nicht gelöscht werden." : ""}
+                    checked={!!sel[r.id]}
+                    onChange={()=>toggle(r.id)}
                   />
                 </td>
                 <td className={isBad(r,"email")?"bad":""}>{r.email||""}</td>
@@ -1272,8 +1328,6 @@ function ErrorList() {
   );
 }
 /* ==== END PART 5 ==== */
-
-
 
 
 
