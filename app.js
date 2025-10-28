@@ -7,17 +7,13 @@ const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
-/** 
- * Reads können bei manchen GAS-Deployments nur per GET gehen.
- * Default auf POST (vermeidet oft Preflight).
- * Wenn du 405/Preflight siehst, setze READ_METHOD = "GET".
- */
-const READ_METHOD = "POST"; // oder "GET"
+/** Robust-HTTP: erst POST (Body-only path), dann POST (Query+Body), dann GET (Query) */
+const READ_METHOD = "AUTO"; // AUTO ignoriert, wir probieren die Sequenz unten
 
-/** --- API: Primärpfade als ?path=api/... --- */
+/** --- API: nur noch ?path=api/... (wir ändern ihn NICHT mehr programmatisch) --- */
 const API = {
   // LOCAL
-  contacts: function(limit, includeInactive) {
+  contacts: function(limit, includeInactive){
     if (includeInactive === undefined) includeInactive = true;
     const lim = encodeURIComponent(limit || 50);
     const inc = includeInactive ? 1 : 0;
@@ -76,94 +72,88 @@ const API = {
   },
 };
 
-/** ============ HTTP Layer mit Path-Fallbacks ============ */
+/** ============ HTTP Layer (Dual-Path: Body-first, dann Query) ============ */
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-function pathVariants(p) {
-  const s = decodeURIComponent(String(p || "").trim());
-  const noSlash = s.replace(/^\/+/, "");
-  const variants = new Set();
-  variants.add(noSlash);
-  if (noSlash.startsWith("api/")) variants.add(noSlash.slice(4));
-  if (!noSlash.startsWith("api/")) variants.add("api/" + noSlash);
-  variants.add("/" + noSlash);
-  if (noSlash.startsWith("api/")) variants.add("/" + noSlash.slice(4));
-  variants.add(noSlash.replace(/^api\//,"api/v1/"));
-  variants.add(("api/v1/" + noSlash.replace(/^api\//,"")).replace(/^api\/v1\/api\//,"api/v1/"));
-  return Array.from(variants);
+function extractPathFromUrl(urlString){
+  try { return new URL(urlString).searchParams.get("path") || ""; }
+  catch { return ""; }
 }
-
-function withPathVariant(urlString, newPath) {
-  const url = new URL(urlString);
-  url.searchParams.set("path", newPath);
-  return url.toString();
+function stripPathQuery(urlString){
+  try {
+    const u = new URL(urlString);
+    u.searchParams.delete("path");
+    return u.toString();
+  } catch { return urlString; }
 }
-
-async function fetchWithRetry(url, options = {}, tries = 4) {
+async function tryFetch(url, options, tries = 3){
   let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try {
+  for (let i=0;i<tries;i++){
+    try{
       const res = await fetch(url, options);
-      if (res.status === 429 || res.status === 503) {
-        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
-        await sleep(wait);
+      if (res.status === 429 || res.status === 503){
+        await sleep(200*Math.pow(2,i) + Math.floor(Math.random()*120));
         continue;
       }
-      if (!res.ok) {
-        const txt = await res.text().catch(()=> "");
+      const txt = await res.text();
+      if (!res.ok){
         throw new Error(`HTTP ${res.status} @ ${url}: ${txt.slice(0,160)}`);
       }
-      const txt = await res.text();
       try { return JSON.parse(txt); } catch { return { text: txt }; }
-    } catch (err) {
-      lastErr = err;
-      await sleep(150 * (i + 1));
+    } catch (e){
+      lastErr = e;
+      await sleep(120*(i+1));
     }
   }
-  throw lastErr || new Error(`Request failed: ${url}`);
+  throw lastErr || new Error('Request failed');
 }
 
-async function requestWithPathFallback(urlString, options, triesPerVariant = 1) {
-  const url = new URL(urlString);
-  const originalPath = url.searchParams.get("path") || "";
-  const variants = pathVariants(originalPath);
-  for (const pv of variants) {
-    const tryUrl = withPathVariant(urlString, pv);
-    const rsp = await fetchWithRetry(tryUrl, options, triesPerVariant);
-    if (rsp && !(String(rsp.error || "").toLowerCase() === "not found")) {
-      return rsp;
-    }
-  }
-  const last = variants[variants.length - 1];
-  throw new Error(`Endpoint not found for "${originalPath}" (tried: ${variants.join(", ")})`);
+async function robustRequest(urlString, bodyObj){
+  const path = extractPathFromUrl(urlString);
+  const ts = Date.now();
+
+  // 1) POST ohne Query, nur Body (path, payload)
+  try{
+    const url1 = stripPathQuery(urlString);
+    const rsp1 = await tryFetch(url1, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ path, ...bodyObj, _t: ts })
+    });
+    if (!(rsp1 && String(rsp1.error||"").toLowerCase()==="not found")) return rsp1;
+  }catch(e){ /* fall through */ }
+
+  // 2) POST mit Query + Body (path in beiden)
+  try{
+    const rsp2 = await tryFetch(urlString, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ path, ...bodyObj, _t: ts })
+    });
+    if (!(rsp2 && String(rsp2.error||"").toLowerCase()==="not found")) return rsp2;
+  }catch(e){ /* fall through */ }
+
+  // 3) GET mit Query (klassisch)
+  try{
+    const url3 = urlString + (urlString.includes("?") ? "&" : "?") + "_=" + ts;
+    const rsp3 = await tryFetch(url3, { method: "GET" });
+    if (!(rsp3 && String(rsp3.error||"").toLowerCase()==="not found")) return rsp3;
+  }catch(e){ /* fall through */ }
+
+  throw new Error(`Endpoint not found for "${path}" (tried POST body-only, POST query+body, GET query).`);
 }
 
-async function httpGet(url) {
-  if (READ_METHOD === "GET") {
-    return requestWithPathFallback(url, { method: "GET" });
-  }
-  return requestWithPathFallback(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "",
-  });
-}
-async function httpPost(url, body) {
-  return requestWithPathFallback(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(body || {}),
-  });
-}
+async function httpGet(url){ return robustRequest(url, {}); }
+async function httpPost(url, body){ return robustRequest(url, body || {}); }
 
 /** ============ helpers ============ */
-function cn(...xs) { return xs.filter(Boolean).join(" "); }
-function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
+function cn(){ return Array.from(arguments).filter(Boolean).join(" "); }
+function isEmail(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
-/** ============ CSV/PDF parsing ============ */
+/** ============ CSV/PDF parsing (unverändert) ============ */
 function detectDelimiter(headerLine) {
   const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
   const candidates = [{ d: ";", n: c(headerLine, ";") }, { d: ",", n: c(headerLine, ",") }, { d: "\t", n: c(headerLine, "\t") }];
@@ -290,11 +280,8 @@ function Section({ title, right, children, className }) {
 function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
 function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
+
 /* ==== END PART 1 ==== */
-
-
-
-
 
 
 
