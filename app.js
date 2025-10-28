@@ -1,6 +1,5 @@
 /* ==== PART 1 ==== */
-// ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
-const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
+// ===== avus smart-cap Dashboard – CONFIG, HTTP, Helpers, Parsers, UI-Primitives =====
 
 /** =====================
  *  CONFIG / API PATHS
@@ -8,26 +7,42 @@ const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
+// Cache-Buster an URL hängen (verhindert aggressives CDN-Caching)
+function withTs(url) {
+  const u = new URL(url, location.origin);
+  u.searchParams.set("_", String(Date.now()));
+  return u.toString();
+}
+
 // --- API (ohne führenden Slash in path) ---
 const API = {
   // LOCAL
   contacts: (limit, includeInactive = true) =>
-    `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}&includeInactive=${includeInactive ? 1 : 0}`,
+    `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(
+      limit || 50
+    )}&includeInactive=${includeInactive ? 1 : 0}`,
   stats: () => `${API_BASE}?path=api/stats`,
 
   templates: () => `${API_BASE}?path=api/templates`,
-  saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
+  saveTemplate: (sequenceId) =>
+    `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
+  // löschen (lokal)
+  deleteTemplate: (sequenceId) =>
+    `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
 
   signatures: () => `${API_BASE}?path=api/signatures`,
   saveSignature: () => `${API_BASE}?path=api/signatures/save`,
   setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
   signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
+  // löschen (lokal)
+  deleteSignature: (name) =>
+    `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
 
   blacklistLocal: (q, includeBounces) =>
-    `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+    `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(
+      q || ""
+    )}&bounces=${includeBounces ? 1 : 0}`,
 
   toggleActive: () => `${API_BASE}?path=api/contacts/active`,
   setTodo: () => `${API_BASE}?path=api/contacts/todo`,
@@ -41,16 +56,28 @@ const API = {
   // GLOBAL
   global: {
     templates: () => `${API_BASE}?path=api/global/templates`,
-    saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
+    saveTemplate: (sequenceId) =>
+      `${API_BASE}?path=${encodeURIComponent(
+        "api/global/templates/" + sequenceId
+      )}`,
     setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
-    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
+    deleteTemplate: (sequenceId) =>
+      `${API_BASE}?path=${encodeURIComponent(
+        "api/global/templates/delete/" + sequenceId
+      )}`,
 
     signatures: () => `${API_BASE}?path=api/global/signatures`,
     saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
     setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
-    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
+    deleteSignature: (name) =>
+      `${API_BASE}?path=${encodeURIComponent(
+        "api/global/signatures/delete/" + name
+      )}`,
 
-    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+    blacklist: (q, includeBounces) =>
+      `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(
+        q || ""
+      )}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
 
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
@@ -59,56 +86,76 @@ const API = {
   },
 };
 
-/** ============ helpers ============ */
-function cn(...xs) { return xs.filter(Boolean).join(" "); }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
-function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
-function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
-const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
-
-// ---- CACHE BUSTER ----
-function withTs(url){
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}_=${Date.now()}`;
-}
-
-// --- HTTP (Retry/Backoff, no-cache, POST for reads to avoid preflight) ---
+/** ============ HTTP (Retry/Backoff, CORS-safe) ============ */
 async function fetchWithRetry(url, options = {}, tries = 5) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url, {
         ...options,
-        headers: {
-          "Content-Type": "text/plain;charset=utf-8",
-          "Cache-Control": "no-cache",
-          "Pragma": "no-cache",
-          ...(options.headers || {})
-        }
+        mode: "cors",
+        credentials: "omit", // public GAS
       });
       if (res.status === 429 || res.status === 503) {
         const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
-        await sleep(wait); continue;
+        await sleep(wait);
+        continue;
       }
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${txt.slice(0,150)}`);
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 150)}`);
       }
       const txt = await res.text();
-      try { return JSON.parse(txt); } catch { return { text: txt }; }
+      try {
+        return JSON.parse(txt);
+      } catch {
+        return { text: txt };
+      }
     } catch (err) {
-      lastErr = err; await sleep(150 * (i + 1));
+      lastErr = err;
+      await sleep(150 * (i + 1));
     }
   }
   throw lastErr || new Error(`Request failed: ${url}`);
 }
+
+// Reads: GET ohne Body (vermeidet Preflight)
 async function httpGet(url) {
-  return fetchWithRetry(withTs(url), { method: "POST", body: "" });
+  return fetchWithRetry(withTs(url), { method: "GET" });
 }
+
+// Writes: POST mit safelisted Content-Type (kein Preflight-Drama)
 async function httpPost(url, body) {
-  return fetchWithRetry(withTs(url), { method: "POST", body: JSON.stringify(body || {}) });
+  return fetchWithRetry(withTs(url), {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(body || {}),
+  });
 }
+
+/** ============ helpers ============ */
+function cn(...xs) {
+  return xs.filter(Boolean).join(" ");
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function isEmail(x) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || "");
+}
+function asBoolTF(v) {
+  // akzeptiert "TRUE"/"FALSE", true/false, "true"/"false"
+  if (typeof v === "boolean") return v;
+  const s = String(v).trim().toUpperCase();
+  if (s === "TRUE") return true;
+  if (s === "FALSE") return false;
+  return !!v;
+}
+function fmtDate(d) {
+  if (!d) return "";
+  const dt = new Date(d);
+  return isNaN(dt) ? String(d) : dt.toLocaleString();
+}
+// Steps clamp 1..5
+const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
 /** ============ CSV/PDF parsing ============ */
 function detectDelimiter(headerLine) {
@@ -134,14 +181,22 @@ function normalizeKey(k) {
   return k;
 }
 function splitCSV(line, delim) {
-  const out = []; let cur = "", inQ = false;
+  const out = [];
+  let cur = "",
+    inQ = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
-      else inQ = !inQ;
-    } else if (ch === delim && !inQ) { out.push(cur); cur = ""; }
-    else { cur += ch; }
+      if (inQ && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else inQ = !inQ;
+    } else if (ch === delim && !inQ) {
+      out.push(cur);
+      cur = "";
+    } else {
+      cur += ch;
+    }
   }
   out.push(cur);
   return out;
@@ -157,13 +212,20 @@ async function parseCSV(file) {
   const data = [];
   for (let r = 1; r < lines.length; r++) {
     const cols = splitCSV(lines[r], delim).map((c) => c.trim());
-    const rec = {}; headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
-    const email = rec.email || ""; const last = rec.lastName || ""; const comp = rec.company || "";
+    const rec = {};
+    headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
+    const email = rec.email || "";
+    const last = rec.lastName || "";
+    const comp = rec.company || "";
     if (email && last && comp) {
       data.push({
-        email: email, lastName: last, company: comp,
-        firstName: rec.firstName || "", position: rec.position || "",
-        phone: rec.phone || "", mobile: rec.mobile || "",
+        email: email,
+        lastName: last,
+        company: comp,
+        firstName: rec.firstName || "",
+        position: rec.position || "",
+        phone: rec.phone || "",
+        mobile: rec.mobile || "",
         Anrede: rec.Anrede || "",
       });
     }
@@ -171,15 +233,31 @@ async function parseCSV(file) {
   return data;
 }
 async function parsePDF(file) {
+  if (!window.pdfjsLib) throw new Error("pdfjsLib nicht geladen");
   const arrayBuf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
   async function pageToLines(page) {
     const tc = await page.getTextContent();
-    const items = tc.items.map((it) => { const [a,b,c,d,e,f]=it.transform; return { x:e, y:f, str:it.str }; });
+    const items = tc.items.map((it) => {
+      const [a, b, c, d, e, f] = it.transform;
+      return { x: e, y: f, str: it.str };
+    });
     items.sort((p, q) => q.y - p.y || p.x - q.x);
-    const lines = []; const EPS = 2.5;
-    for (const t of items) { const L = lines.find((l) => Math.abs(l.y - t.y) < EPS); if (L) L.items.push(t); else lines.push({ y: t.y, items: [t] }); }
-    return lines.map((L) => { L.items.sort((p, q) => p.x - q.x); return { y: L.y, items: L.items, text: L.items.map((i) => i.str).join(" ") }; });
+    const lines = [];
+    const EPS = 2.5;
+    for (const t of items) {
+      const L = lines.find((l) => Math.abs(l.y - t.y) < EPS);
+      if (L) L.items.push(t);
+      else lines.push({ y: t.y, items: [t] });
+    }
+    return lines.map((L) => {
+      L.items.sort((p, q) => p.x - q.x);
+      return {
+        y: L.y,
+        items: L.items,
+        text: L.items.map((i) => i.str).join(" "),
+      };
+    });
   }
   function detectColumns(headerLine) {
     const map = {};
@@ -194,23 +272,54 @@ async function parsePDF(file) {
         if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr."))) map.email = it.x;
       }
     }
-    return { firma: map.firma ?? 30, anrede: map.anrede ?? 170, vor: map.vorname ?? 230, nach: map.nachname ?? 310, tel: map.telefon ?? 430, mail: map.email ?? 520 };
+    return {
+      firma: map.firma ?? 30,
+      anrede: map.anrede ?? 170,
+      vor: map.vorname ?? 230,
+      nach: map.nachname ?? 310,
+      tel: map.telefon ?? 430,
+      mail: map.email ?? 520,
+    };
   }
   function sliceByColumns(line, cols) {
     const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
     for (const it of line.items) {
       const x = it.x;
-      const key = x < cols.anrede ? "firma" : x < cols.vor ? "anrede" : x < cols.nach ? "vor" : x < cols.tel ? "nach" : x < cols.mail ? "tel" : "mail";
+      const key =
+        x < cols.anrede
+          ? "firma"
+          : x < cols.vor
+          ? "anrede"
+          : x < cols.nach
+          ? "vor"
+          : x < cols.tel
+          ? "nach"
+          : x < cols.mail
+          ? "tel"
+          : "mail";
       buckets[key].push(it.str);
     }
     const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
-    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
+    return {
+      company: join(buckets.firma),
+      Anrede: join(buckets.anrede),
+      first: join(buckets.vor),
+      last: join(buckets.nach),
+      phone: join(buckets.tel),
+      email: join(buckets.mail),
+    };
   }
   const collected = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const lines = await pageToLines(page);
-    const header = lines.find((L) => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
+    const header = lines.find(
+      (L) =>
+        /firma/i.test(L.text) &&
+        /anrede/i.test(L.text) &&
+        /vorname/i.test(L.text) &&
+        /nachname/i.test(L.text)
+    );
     const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
     for (const L of lines) {
       if (header && Math.abs(L.y - header.y) < 3) continue;
@@ -218,30 +327,80 @@ async function parsePDF(file) {
       const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
       const minimal = rec.company && rec.last;
       if (hasEmail || minimal) {
-        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
+        collected.push({
+          email: hasEmail ? rec.email : "",
+          firstName: rec.first,
+          lastName: rec.last,
+          company: rec.company,
+          position: "",
+          phone: rec.phone || "",
+          mobile: "",
+          Anrede: rec.Anrede || "",
+        });
       }
     }
   }
-  const seen = new Set(); const rows = [];
+  const seen = new Set();
+  const rows = [];
   for (const r of collected) {
-    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
-    if (!seen.has(key)) { seen.add(key); rows.push(r); }
+    const key = r.email
+      ? `e:${r.email.toLowerCase()}`
+      : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      rows.push(r);
+    }
   }
   return rows;
 }
 
-/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
+/** ============ UI helpers (vor Nutzung definiert) ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
-  return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
+  return (
+    <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>
+      {on ? onLabel : offLabel}
+    </button>
+  );
 }
-function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
+function Toolbar({ children }) {
+  return <div className="toolbar">{children}</div>;
+}
 function Section({ title, right, children, className }) {
-  return (<section className={cn("card", className)}><div className="row between vcenter"><h3>{title}</h3>{right}</div><div className="spacer-8" />{children}</section>);
+  return (
+    <section className={cn("card", className)}>
+      <div className="row between vcenter">
+        <h3>{title}</h3>
+        {right}
+      </div>
+      <div className="spacer-8" />
+      {children}
+    </section>
+  );
 }
-function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
-function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
-function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
+function Field({ label, children }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+function TextButton({ children, onClick, disabled }) {
+  return (
+    <button className="btn" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
+function PrimaryButton({ children, onClick, disabled }) {
+  return (
+    <button className="btn primary" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  );
+}
 /* ==== END PART 1 ==== */
+
 
 
 
