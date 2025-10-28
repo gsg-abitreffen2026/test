@@ -341,17 +341,13 @@ function Dashboard() {
         httpGet(API.stats()),
         httpGet(API.contacts(limit, showInactive))
       ]);
-      setStats(s || { sent:0,replies:0,hot:0,needReview:0,meetings:0 });
+      setStats(s || { sent:0, replies:0, hot:0, needReview:0, meetings:0 });
       const arr = Array.isArray(c?.contacts) ? c.contacts : [];
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
       setContacts(norm);
-    } catch (e) {
-      setError(e.message || "Fehler beim Laden");
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setError(e.message || "Fehler beim Laden"); }
+    finally { setLoading(false); }
   }, [limit, showInactive]);
-
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
   // Kampagne
@@ -364,7 +360,7 @@ function Dashboard() {
     catch (e) { setError(e.message || "Stop fehlgeschlagen"); }
   };
 
-  // Active togglen & speichern
+  // Active togglen & speichern (Backend erwartet "TRUE"/"FALSE")
   const toggleActive = (row) => {
     const key = (row.id || row.email || "").toString();
     const newActive = !row.active;
@@ -375,10 +371,10 @@ function Dashboard() {
     const payload = Object.entries(updates).map(([k,v]) => ({
       id: k.includes("@") ? undefined : k,
       email: k.includes("@") ? k : undefined,
-      active: !!v.active
+      active: v.active ? "TRUE" : "FALSE",
     }));
     if (!payload.length) return;
-    try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); }
+    try { await httpPost(API.toggleActive(), { updates: payload }); setUpdates({}); await loadAll(); }
     catch (e) { setError(e.message || "Speichern fehlgeschlagen"); }
   };
 
@@ -395,7 +391,7 @@ function Dashboard() {
       todo: v.todo
     }));
     if (!payload.length) return;
-    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); }
+    try { await httpPost(API.setTodo(), { updates: payload }); setTodoUpdates({}); await loadAll(); }
     catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
   };
   const finishedTodos = React.useMemo(
@@ -407,16 +403,7 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* KPIs */}
-      <div className="grid cols-3 gap">
-        <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
-      </div>
-
-      {/* To-Dos */}
+      {/* To-Dos & Kampagneneinstellungen OBEN */}
       <div className="grid cols-2 gap">
         <Section title="To-Dos (angeschrieben)">
           <ul className="list">
@@ -437,7 +424,6 @@ function Dashboard() {
           </div>
         </Section>
 
-        {/* Kampagnen-Einstellungen */}
         <Section title="Kampagneneinstellungen">
           <div className="grid gap">
             <Field label="Sendouts pro Tag">
@@ -450,6 +436,15 @@ function Dashboard() {
             </div>
           </div>
         </Section>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid cols-3 gap">
+        <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
+        <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
       </div>
 
       {/* Kontakte */}
@@ -508,6 +503,7 @@ function Dashboard() {
     </section>
   );
 }
+
 
 /* ==== END PART 2 ==== */
 
@@ -1211,15 +1207,16 @@ function ErrorList() {
   };
 
   const removeSelected = async () => {
-    const ids = rows.filter(r => sel[r.__clientKey] && r.id).map(r => r.id);
-    if (!ids.length) { alert("Keine löschbaren Einträge ausgewählt."); return; }
-    if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
-    try {
-      await httpPost(API.global.errorsDelete(), { ids });
-      setRows(prev => prev.filter(r => !(r.id && ids.includes(r.id))));
-      setSel({});
-    } catch (e) { alert(e.message || "Fehler beim Löschen"); }
-  };
+  const ids = rows.filter(r => sel[r.id]).map(r => r.id);
+  if (!ids.length) return;
+  if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
+  try {
+    await httpPost(API.global.errorsDelete(), { ids });
+    setSel({});
+    await load(); // ← Server-Truth neu holen (statt lokal filtern)
+  } catch (e) { alert(e.message || "Fehler beim Löschen"); }
+};
+
 
   const isBad = (row, key) => {
     if (["email","Anrede","firstName","lastName","company"].includes(key)) return !row[key];
