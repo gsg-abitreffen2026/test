@@ -1,5 +1,3 @@
-/*-- ==== PART 1 (vollständig, mit Path-Fallbacks & GET/POST-Umschalter) ==== --*/
-<script type="text/babel">
 // ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
@@ -10,97 +8,97 @@ const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
 /** 
- * Umschalter: Manche GAS-Deployments akzeptieren Reads nur per GET.
- * Standard: POST (vermeidet CORS-Preflight in vielen Fällen).
- * Wenn du im Network weiterhin 405/Preflight-Probleme siehst, setze auf "GET".
+ * Reads können bei manchen GAS-Deployments nur per GET gehen.
+ * Default auf POST (vermeidet oft Preflight).
+ * Wenn du 405/Preflight siehst, setze READ_METHOD = "GET".
  */
 const READ_METHOD = "POST"; // oder "GET"
 
-/** --- API: wir bauen weiterhin ?path=api/... URLs (Primärpfad) --- */
+/** --- API: Primärpfade als ?path=api/... --- */
 const API = {
   // LOCAL
-  contacts: (limit, includeInactive = true) =>
-    `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}&includeInactive=${includeInactive ? 1 : 0}`,
-  stats: () => `${API_BASE}?path=api/stats`,
+  contacts: function(limit, includeInactive) {
+    if (includeInactive === undefined) includeInactive = true;
+    const lim = encodeURIComponent(limit || 50);
+    const inc = includeInactive ? 1 : 0;
+    return `${API_BASE}?path=api/contacts&limit=${lim}&includeInactive=${inc}`;
+  },
+  stats: function(){ return `${API_BASE}?path=api/stats`; },
 
-  templates: () => `${API_BASE}?path=api/templates`,
-  saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
-  setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
+  templates: function(){ return `${API_BASE}?path=api/templates`; },
+  saveTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`; },
+  setActiveTemplate: function(){ return `${API_BASE}?path=api/templates/active`; },
+  deleteTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`; },
 
-  signatures: () => `${API_BASE}?path=api/signatures`,
-  saveSignature: () => `${API_BASE}?path=api/signatures/save`,
-  setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
-  signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
+  signatures: function(){ return `${API_BASE}?path=api/signatures`; },
+  saveSignature: function(){ return `${API_BASE}?path=api/signatures/save`; },
+  setActiveSignature: function(){ return `${API_BASE}?path=api/signatures/active`; },
+  signaturesStandard: function(){ return `${API_BASE}?path=api/signatures/standard`; },
+  deleteSignature: function(name){ return `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`; },
 
-  blacklistLocal: (q, includeBounces) =>
-    `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
+  blacklistLocal: function(q, includeBounces){
+    const query = encodeURIComponent(q || "");
+    const b = includeBounces ? 1 : 0;
+    return `${API_BASE}?path=api/blacklist&q=${query}&bounces=${b}`;
+  },
 
-  toggleActive: () => `${API_BASE}?path=api/contacts/active`,
-  setTodo: () => `${API_BASE}?path=api/contacts/todo`,
-  removeContact: () => `${API_BASE}?path=api/contacts/remove`,
+  toggleActive: function(){ return `${API_BASE}?path=api/contacts/active`; },
+  setTodo: function(){ return `${API_BASE}?path=api/contacts/todo`; },
+  removeContact: function(){ return `${API_BASE}?path=api/contacts/remove`; },
 
-  upload: () => `${API_BASE}?path=api/upload`,
-  prepareCampaign: () => `${API_BASE}?path=api/campaign/prepare`,
-  startCampaign: () => `${API_BASE}?path=api/campaign/start`,
-  stopCampaign: () => `${API_BASE}?path=api/campaign/stop`,
+  upload: function(){ return `${API_BASE}?path=api/upload`; },
+  prepareCampaign: function(){ return `${API_BASE}?path=api/campaign/prepare`; },
+  startCampaign: function(){ return `${API_BASE}?path=api/campaign/start`; },
+  stopCampaign: function(){ return `${API_BASE}?path=api/campaign/stop`; },
 
   // GLOBAL
   global: {
-    templates: () => `${API_BASE}?path=api/global/templates`,
-    saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
-    setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
-    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
+    templates: function(){ return `${API_BASE}?path=api/global/templates`; },
+    saveTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`; },
+    setActiveTemplate: function(){ return `${API_BASE}?path=api/global/templates/active`; },
+    deleteTemplate: function(sequenceId){ return `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`; },
 
-    signatures: () => `${API_BASE}?path=api/global/signatures`,
-    saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
-    setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
-    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
+    signatures: function(){ return `${API_BASE}?path=api/global/signatures`; },
+    saveSignature: function(){ return `${API_BASE}?path=api/global/signatures/save`; },
+    setActiveSignature: function(){ return `${API_BASE}?path=api/global/signatures/active`; },
+    deleteSignature: function(name){ return `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`; },
 
-    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
-    addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
+    blacklist: function(q, includeBounces){
+      const query = encodeURIComponent(q || "");
+      const b = includeBounces ? 1 : 0;
+      return `${API_BASE}?path=api/global/blacklist&q=${query}&bounces=${b}`;
+    },
+    addBlacklist: function(){ return `${API_BASE}?path=api/global/blacklist`; },
 
-    errorsList: () => `${API_BASE}?path=api/global/error_list`,
-    errorsAdd: () => `${API_BASE}?path=api/global/error_list/add`,
-    errorsDelete: () => `${API_BASE}?path=api/global/error_list/delete`,
+    errorsList: function(){ return `${API_BASE}?path=api/global/error_list`; },
+    errorsAdd: function(){ return `${API_BASE}?path=api/global/error_list/add`; },
+    errorsDelete: function(){ return `${API_BASE}?path=api/global/error_list/delete`; },
   },
 };
 
 /** ============ HTTP Layer mit Path-Fallbacks ============ */
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-/** Varianten für path erzeugen, um Router-Abweichungen abzufangen */
 function pathVariants(p) {
   const s = decodeURIComponent(String(p || "").trim());
   const noSlash = s.replace(/^\/+/, "");
   const variants = new Set();
-
-  // Original
   variants.add(noSlash);
-  // ohne führendes "api/"
   if (noSlash.startsWith("api/")) variants.add(noSlash.slice(4));
-  // mit führendem "api/" (falls original ohne war)
   if (!noSlash.startsWith("api/")) variants.add("api/" + noSlash);
-  // mit führendem Slash
   variants.add("/" + noSlash);
-  // mit führendem Slash + ohne "api/"
   if (noSlash.startsWith("api/")) variants.add("/" + noSlash.slice(4));
-  // fallback "v1"
   variants.add(noSlash.replace(/^api\//,"api/v1/"));
-  variants.add(noSlash.replace(/^/,"api/v1/"));
-
+  variants.add(("api/v1/" + noSlash.replace(/^api\//,"")).replace(/^api\/v1\/api\//,"api/v1/"));
   return Array.from(variants);
 }
 
-/** URL neu mit anderer path-Variante bauen */
 function withPathVariant(urlString, newPath) {
   const url = new URL(urlString);
   url.searchParams.set("path", newPath);
   return url.toString();
 }
 
-/** Fetch + Retry */
 async function fetchWithRetry(url, options = {}, tries = 4) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
@@ -125,40 +123,32 @@ async function fetchWithRetry(url, options = {}, tries = 4) {
   throw lastErr || new Error(`Request failed: ${url}`);
 }
 
-/** Kern: automatischer Path-Fallback bei {error:"not found"} */
 async function requestWithPathFallback(urlString, options, triesPerVariant = 1) {
   const url = new URL(urlString);
   const originalPath = url.searchParams.get("path") || "";
   const variants = pathVariants(originalPath);
-
   for (const pv of variants) {
     const tryUrl = withPathVariant(urlString, pv);
     const rsp = await fetchWithRetry(tryUrl, options, triesPerVariant);
     if (rsp && !(String(rsp.error || "").toLowerCase() === "not found")) {
-      return rsp; // Erfolg oder anderer Fehler, aber nicht "not found"
+      return rsp;
     }
-    // sonst nächste Variante
   }
-  // Alle Varianten lieferten "not found"
   const last = variants[variants.length - 1];
   throw new Error(`Endpoint not found for "${originalPath}" (tried: ${variants.join(", ")})`);
 }
 
-/** Öffentliche Helper (nutzen den Fallback automatisch) */
 async function httpGet(url) {
   if (READ_METHOD === "GET") {
     return requestWithPathFallback(url, { method: "GET" });
   }
-  // POST für Reads (oft weniger CORS-Probleme)
   return requestWithPathFallback(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: "",
   });
 }
-
 async function httpPost(url, body) {
-  // Klassisches POST mit Path-Fallback
   return requestWithPathFallback(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
@@ -171,7 +161,6 @@ function cn(...xs) { return xs.filter(Boolean).join(" "); }
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
-// ★ Steps-Helfer (max 5)
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
 /** ============ CSV/PDF parsing ============ */
@@ -290,7 +279,7 @@ async function parsePDF(file) {
   return rows;
 }
 
-/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
+/** ============ UI helpers ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
   return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
 }
@@ -301,10 +290,7 @@ function Section({ title, right, children, className }) {
 function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
 function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
-</script>
-  
-/*-- ==== END PART 1 ==== --*/
-
+/* ==== END PART 1 ==== */
 
 
 
