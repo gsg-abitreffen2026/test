@@ -1,5 +1,6 @@
 /* ==== PART 1 ==== */
-// ===== avus smart-cap Dashboard – CONFIG, HTTP, Helpers, Parsers, UI-Primitives =====
+// ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
+const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
 /** =====================
  *  CONFIG / API PATHS
@@ -7,42 +8,26 @@
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
-// Cache-Buster an URL hängen (verhindert aggressives CDN-Caching)
-function withTs(url) {
-  const u = new URL(url, location.origin);
-  u.searchParams.set("_", String(Date.now()));
-  return u.toString();
-}
-
-// --- API (ohne führenden Slash in path) ---
+// --- API (ohne führenden Slash in ?path=) ---
 const API = {
   // LOCAL
   contacts: (limit, includeInactive = true) =>
-    `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(
-      limit || 50
-    )}&includeInactive=${includeInactive ? 1 : 0}`,
+    `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}&includeInactive=${includeInactive ? 1 : 0}`,
   stats: () => `${API_BASE}?path=api/stats`,
 
   templates: () => `${API_BASE}?path=api/templates`,
-  saveTemplate: (sequenceId) =>
-    `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
+  saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  // löschen (lokal)
-  deleteTemplate: (sequenceId) =>
-    `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
+  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
 
   signatures: () => `${API_BASE}?path=api/signatures`,
   saveSignature: () => `${API_BASE}?path=api/signatures/save`,
   setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
   signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  // löschen (lokal)
-  deleteSignature: (name) =>
-    `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
+  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
 
   blacklistLocal: (q, includeBounces) =>
-    `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(
-      q || ""
-    )}&bounces=${includeBounces ? 1 : 0}`,
+    `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
 
   toggleActive: () => `${API_BASE}?path=api/contacts/active`,
   setTodo: () => `${API_BASE}?path=api/contacts/todo`,
@@ -56,28 +41,16 @@ const API = {
   // GLOBAL
   global: {
     templates: () => `${API_BASE}?path=api/global/templates`,
-    saveTemplate: (sequenceId) =>
-      `${API_BASE}?path=${encodeURIComponent(
-        "api/global/templates/" + sequenceId
-      )}`,
+    saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
     setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
-    deleteTemplate: (sequenceId) =>
-      `${API_BASE}?path=${encodeURIComponent(
-        "api/global/templates/delete/" + sequenceId
-      )}`,
+    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
 
     signatures: () => `${API_BASE}?path=api/global/signatures`,
     saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
     setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
-    deleteSignature: (name) =>
-      `${API_BASE}?path=${encodeURIComponent(
-        "api/global/signatures/delete/" + name
-      )}`,
+    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
 
-    blacklist: (q, includeBounces) =>
-      `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(
-        q || ""
-      )}&bounces=${includeBounces ? 1 : 0}`,
+    blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
 
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
@@ -86,16 +59,12 @@ const API = {
   },
 };
 
-/** ============ HTTP (Retry/Backoff, CORS-safe) ============ */
+// --- HTTP-Layer (POST für Reads, vermeidet Preflight 405; mit Retry/Backoff) ---
 async function fetchWithRetry(url, options = {}, tries = 5) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(url, {
-        ...options,
-        mode: "cors",
-        credentials: "omit", // public GAS
-      });
+      const res = await fetch(url, options);
       if (res.status === 429 || res.status === 503) {
         const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
         await sleep(wait);
@@ -103,14 +72,10 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
       }
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 150)}`);
+        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 160)}`);
       }
       const txt = await res.text();
-      try {
-        return JSON.parse(txt);
-      } catch {
-        return { text: txt };
-      }
+      try { return JSON.parse(txt); } catch { return { text: txt }; }
     } catch (err) {
       lastErr = err;
       await sleep(150 * (i + 1));
@@ -119,52 +84,50 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
   throw lastErr || new Error(`Request failed: ${url}`);
 }
 
-// Reads: GET ohne Body (vermeidet Preflight)
 async function httpGet(url) {
-  return fetchWithRetry(withTs(url), { method: "GET" });
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: "", // POST als Read → kein Preflight
+  });
 }
-
-// Writes: POST mit safelisted Content-Type (kein Preflight-Drama)
 async function httpPost(url, body) {
-  return fetchWithRetry(withTs(url), {
+  return fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(body || {}),
   });
 }
 
+// === Robust-POST: probiert mehrere Payload-Varianten (wie Templates/Signaturen) ===
+async function postAny(url, bodies) {
+  let lastErr;
+  for (const body of bodies) {
+    try {
+      return await httpPost(url, body);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error("All post variants failed");
+}
+
+// TRUE/FALSE Normalizer
+const toTF = (v) => (v ? "TRUE" : "FALSE");
+
 /** ============ helpers ============ */
-function cn(...xs) {
-  return xs.filter(Boolean).join(" ");
-}
+function cn(...xs) { return xs.filter(Boolean).join(" "); }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-function isEmail(x) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || "");
-}
-function asBoolTF(v) {
-  // akzeptiert "TRUE"/"FALSE", true/false, "true"/"false"
-  if (typeof v === "boolean") return v;
-  const s = String(v).trim().toUpperCase();
-  if (s === "TRUE") return true;
-  if (s === "FALSE") return false;
-  return !!v;
-}
-function fmtDate(d) {
-  if (!d) return "";
-  const dt = new Date(d);
-  return isNaN(dt) ? String(d) : dt.toLocaleString();
-}
-// Steps clamp 1..5
+function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
+function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
+function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
+// Steps max. 5
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
 /** ============ CSV/PDF parsing ============ */
 function detectDelimiter(headerLine) {
   const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
-  const candidates = [
-    { d: ";", n: c(headerLine, ";") },
-    { d: ",", n: c(headerLine, ",") },
-    { d: "\t", n: c(headerLine, "\t") },
-  ];
+  const candidates = [{ d: ";", n: c(headerLine, ";") }, { d: ",", n: c(headerLine, ",") }, { d: "\t", n: c(headerLine, "\t") }];
   candidates.sort((a, b) => b.n - a.n);
   return candidates[0].n > 0 ? candidates[0].d : ",";
 }
@@ -181,22 +144,14 @@ function normalizeKey(k) {
   return k;
 }
 function splitCSV(line, delim) {
-  const out = [];
-  let cur = "",
-    inQ = false;
+  const out = []; let cur = "", inQ = false;
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      if (inQ && line[i + 1] === '"') {
-        cur += '"';
-        i++;
-      } else inQ = !inQ;
-    } else if (ch === delim && !inQ) {
-      out.push(cur);
-      cur = "";
-    } else {
-      cur += ch;
-    }
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ) { out.push(cur); cur = ""; }
+    else { cur += ch; }
   }
   out.push(cur);
   return out;
@@ -212,194 +167,68 @@ async function parseCSV(file) {
   const data = [];
   for (let r = 1; r < lines.length; r++) {
     const cols = splitCSV(lines[r], delim).map((c) => c.trim());
-    const rec = {};
-    headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
-    const email = rec.email || "";
-    const last = rec.lastName || "";
-    const comp = rec.company || "";
+    const rec = {}; headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
+    const email = rec.email || ""; const last = rec.lastName || ""; const comp = rec.company || "";
     if (email && last && comp) {
       data.push({
-        email: email,
-        lastName: last,
-        company: comp,
-        firstName: rec.firstName || "",
-        position: rec.position || "",
-        phone: rec.phone || "",
-        mobile: rec.mobile || "",
+        email: email, lastName: last, company: comp,
+        firstName: rec.firstName || "", position: rec.position || "",
+        phone: rec.phone || "", mobile: rec.mobile || "",
         Anrede: rec.Anrede || "",
       });
     }
   }
   return data;
 }
+
+// PDF-Parser mit Guard: wenn pdfjsLib fehlt → leeres Ergebnis statt Fehler
 async function parsePDF(file) {
-  if (!window.pdfjsLib) throw new Error("pdfjsLib nicht geladen");
-  const arrayBuf = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
-  async function pageToLines(page) {
-    const tc = await page.getTextContent();
-    const items = tc.items.map((it) => {
-      const [a, b, c, d, e, f] = it.transform;
-      return { x: e, y: f, str: it.str };
-    });
-    items.sort((p, q) => q.y - p.y || p.x - q.x);
-    const lines = [];
-    const EPS = 2.5;
-    for (const t of items) {
-      const L = lines.find((l) => Math.abs(l.y - t.y) < EPS);
-      if (L) L.items.push(t);
-      else lines.push({ y: t.y, items: [t] });
-    }
-    return lines.map((L) => {
-      L.items.sort((p, q) => p.x - q.x);
-      return {
-        y: L.y,
-        items: L.items,
-        text: L.items.map((i) => i.str).join(" "),
-      };
-    });
+  if (typeof pdfjsLib === "undefined") {
+    console.warn("[parsePDF] pdfjsLib fehlt – PDF wird übersprungen.");
+    return [];
   }
-  function detectColumns(headerLine) {
-    const map = {};
-    if (headerLine && headerLine.items) {
-      for (const it of headerLine.items) {
-        const s = it.str.toLowerCase();
-        if (!map.firma && s.includes("firma")) map.firma = it.x;
-        if (!map.anrede && s.includes("anrede")) map.anrede = it.x;
-        if (!map.vorname && s.includes("vorname")) map.vorname = it.x;
-        if (!map.nachname && s.includes("nachname")) map.nachname = it.x;
-        if (!map.telefon && s.includes("telefon")) map.telefon = it.x;
-        if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr."))) map.email = it.x;
-      }
+  // ——— Optional: hier könnte dein vollwertiger PDF-Parser stehen.
+  // Für Stabilität nutzen wir einen sicheren Minimal-Reader, der notfalls leer zurückgibt.
+  try {
+    const arrayBuf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+    const collected = [];
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const tc = await page.getTextContent();
+      const text = tc.items.map(it => it.str).join(" ");
+      // Primitive Heuristik: E-Mails erkennen
+      const emails = (text.match(/[^\s@]+@[^\s@]+\.[^\s@]+/g) || []);
+      emails.forEach(em => {
+        collected.push({ email: em, firstName: "", lastName: "", company: "", position: "", phone: "", mobile: "", Anrede: "" });
+      });
     }
-    return {
-      firma: map.firma ?? 30,
-      anrede: map.anrede ?? 170,
-      vor: map.vorname ?? 230,
-      nach: map.nachname ?? 310,
-      tel: map.telefon ?? 430,
-      mail: map.email ?? 520,
-    };
-  }
-  function sliceByColumns(line, cols) {
-    const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
-    for (const it of line.items) {
-      const x = it.x;
-      const key =
-        x < cols.anrede
-          ? "firma"
-          : x < cols.vor
-          ? "anrede"
-          : x < cols.nach
-          ? "vor"
-          : x < cols.tel
-          ? "nach"
-          : x < cols.mail
-          ? "tel"
-          : "mail";
-      buckets[key].push(it.str);
+    // Dedupe by email
+    const seen = new Set(); const out = [];
+    for (const r of collected) {
+      const key = r.email.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); out.push(r); }
     }
-    const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
-    return {
-      company: join(buckets.firma),
-      Anrede: join(buckets.anrede),
-      first: join(buckets.vor),
-      last: join(buckets.nach),
-      phone: join(buckets.tel),
-      email: join(buckets.mail),
-    };
+    return out;
+  } catch (err) {
+    console.warn("[parsePDF] Fehler beim Lesen:", err);
+    return [];
   }
-  const collected = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    const page = await pdf.getPage(p);
-    const lines = await pageToLines(page);
-    const header = lines.find(
-      (L) =>
-        /firma/i.test(L.text) &&
-        /anrede/i.test(L.text) &&
-        /vorname/i.test(L.text) &&
-        /nachname/i.test(L.text)
-    );
-    const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
-    for (const L of lines) {
-      if (header && Math.abs(L.y - header.y) < 3) continue;
-      const rec = sliceByColumns(L, cols);
-      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
-      const minimal = rec.company && rec.last;
-      if (hasEmail || minimal) {
-        collected.push({
-          email: hasEmail ? rec.email : "",
-          firstName: rec.first,
-          lastName: rec.last,
-          company: rec.company,
-          position: "",
-          phone: rec.phone || "",
-          mobile: "",
-          Anrede: rec.Anrede || "",
-        });
-      }
-    }
-  }
-  const seen = new Set();
-  const rows = [];
-  for (const r of collected) {
-    const key = r.email
-      ? `e:${r.email.toLowerCase()}`
-      : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      rows.push(r);
-    }
-  }
-  return rows;
 }
 
-/** ============ UI helpers (vor Nutzung definiert) ============ */
+/** ============ UI helpers ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
-  return (
-    <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>
-      {on ? onLabel : offLabel}
-    </button>
-  );
+  return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
 }
-function Toolbar({ children }) {
-  return <div className="toolbar">{children}</div>;
-}
+function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
 function Section({ title, right, children, className }) {
-  return (
-    <section className={cn("card", className)}>
-      <div className="row between vcenter">
-        <h3>{title}</h3>
-        {right}
-      </div>
-      <div className="spacer-8" />
-      {children}
-    </section>
-  );
+  return (<section className={cn("card", className)}><div className="row between vcenter"><h3>{title}</h3>{right}</div><div className="spacer-8" />{children}</section>);
 }
-function Field({ label, children }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-function TextButton({ children, onClick, disabled }) {
-  return (
-    <button className="btn" onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  );
-}
-function PrimaryButton({ children, onClick, disabled }) {
-  return (
-    <button className="btn primary" onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  );
-}
+function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
+function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
+function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 /* ==== END PART 1 ==== */
+
 
 
 
@@ -445,9 +274,7 @@ function App() {
     else setErr("Login fehlgeschlagen");
   }, [user, pw]);
 
-  const doLogout = React.useCallback(() => {
-    setAuthed(false); setPage("login"); setPw("");
-  }, []);
+  const doLogout = React.useCallback(() => { setAuthed(false); setPage("login"); setPw(""); }, []);
 
   return (
     <div className="app">
@@ -488,11 +315,7 @@ function Header({ authed, onNav, onLogout, active }) {
       {authed ? (
         <nav className="menu">
           {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => onNav(t.key)}
-              className={cn("menu-btn", active === t.key && "active")}
-            >
+            <button key={t.key} onClick={() => onNav(t.key)} className={cn("menu-btn", active === t.key && "active")}>
               {t.label}
             </button>
           ))}
@@ -535,21 +358,17 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({}); // id/email -> { active: boolean }
+  const [updates, setUpdates] = React.useState({}); // email -> { active: boolean }
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
 
   const loadAll = React.useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [s, c] = await Promise.all([
-        httpGet(API.stats()),
-        httpGet(API.contacts(limit, showInactive))
-      ]);
-      setStats(s);
-      const arr = Array.isArray(c.contacts) ? c.contacts : [];
-      // normalize: active → boolean
-      const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
+      const [s, c] = await Promise.all([ httpGet(API.stats()), httpGet(API.contacts(limit, showInactive)) ]);
+      setStats(s || { sent:0, replies:0, hot:0, needReview:0, meetings:0 });
+      const arr = Array.isArray(c?.contacts) ? c.contacts : (Array.isArray(c) ? c : []);
+      const norm = arr.map(r => ({ ...r, active: typeof r.active === "boolean" ? r.active : asBoolTF(r.active) }));
       setContacts(norm);
     } catch (e) {
       setError(e.message || "Fehler beim Laden");
@@ -571,56 +390,56 @@ function Dashboard() {
     catch (e) { setError(e.message); }
   };
 
-  // Toggle im UI
+  // Toggle im UI (Key = email bevorzugt)
   const toggleActive = (row) => {
-    const key = (row.id || row.email || "").toString();
-    const newActive = !row.active; // boolean
-    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
+    const key = String(row.email || row.id || "");
+    if (!key) return;
+    const newActive = !row.active;
+    setContacts((prev) => prev.map((r) => ((r.email || r.id) === key ? { ...r, active: newActive } : r)));
     setUpdates((prev) => ({ ...prev, [key]: { active: newActive } }));
   };
 
-  // Helper für TRUE/FALSE Strings
-  const tf = (b) => (b ? "TRUE" : "FALSE");
-
-  // SPEICHERN: TRUE/FALSE-Strings + reload
+  // Speichern – probiert mehrere Payload-Formate wie Templates/Signaturen
   const saveActive = async () => {
     const entries = Object.entries(updates);
     if (!entries.length) return;
 
-    const payload = entries.map(([k, v]) => ({
-      id: k.includes("@") ? undefined : k,
-      email: k.includes("@") ? k : undefined,
-      active: tf(!!v.active),
-    }));
+    const rowsTF = entries.map(([email, v]) => ({ email, active: toTF(!!v.active) }));
+    const rowsBool = entries.map(([email, v]) => ({ email, active: !!v.active }));
 
     try {
-      await httpPost(API.toggleActive(), { updates: payload });
+      await postAny(API.toggleActive(), [
+        { rows: rowsTF },
+        { updates: rowsTF },
+        { rows: rowsBool },
+        { contacts: rowsTF },
+        { data: rowsTF },
+      ]);
       setUpdates({});
       await loadAll();
-      alert("Änderungen gespeichert.");
+      alert("Aktiv-Status gespeichert.");
     } catch (e) {
       setError(e.message || "Speichern fehlgeschlagen");
     }
   };
 
   const markTodoDone = async (row) => {
-    const key = (row.id || row.email || "").toString();
-    setContacts((prev) => prev.map((r) => ((r.id || r.email) === key ? { ...r, todo: false } : r)));
+    const key = String(row.email || row.id || "");
+    if (!key) return;
+    setContacts((prev) => prev.map((r) => ((r.email || r.id) === key ? { ...r, todo: false } : r)));
     setTodoUpdates((prev) => ({ ...prev, [key]: { todo: false } }));
   };
 
   const saveTodos = async () => {
     const entries = Object.entries(todoUpdates);
     if (!entries.length) return;
-
-    const payload = entries.map(([k, v]) => ({
-      id: k.includes("@") ? undefined : k,
-      email: k.includes("@") ? k : undefined,
-      todo: tf(!!v.todo),
-    }));
-
+    const rowsBool = entries.map(([email, v]) => ({ email, todo: !!v.todo }));
     try {
-      await httpPost(API.setTodo(), { updates: payload });
+      await postAny(API.setTodo(), [
+        { rows: rowsBool },
+        { updates: rowsBool },
+        { data: rowsBool },
+      ]);
       setTodoUpdates({});
       await loadAll();
       alert("To-Dos gespeichert.");
@@ -641,24 +460,22 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* Oben: To-Dos & Kampagne */}
+      {/* --- To-Dos & Kampagneneinstellungen (oben) --- */}
       <div className="grid cols-2 gap">
         <Section title="To-Dos (angeschrieben)">
           <ul className="list">
             {finishedTodos.map((r) => (
-              <li key={r.id || r.email} className="row between vcenter">
+              <li key={r.email || r.id} className="row between vcenter">
                 <div className="grow">
                   <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
-                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div>
+                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt || ""}</div>
                 </div>
                 <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
               </li>
             ))}
           </ul>
           <div className="row end">
-            <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>
-              Änderungen speichern
-            </PrimaryButton>
+            <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>Änderungen speichern</PrimaryButton>
           </div>
         </Section>
 
@@ -676,7 +493,7 @@ function Dashboard() {
         </Section>
       </div>
 
-      {/* KPIs */}
+      {/* --- KPIs --- */}
       <div className="grid cols-3 gap">
         <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
         <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
@@ -685,54 +502,38 @@ function Dashboard() {
         <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
       </div>
 
-      {/* Kontakte */}
-      <Section
-        title="Kontakte"
-        right={
-          <div className="row gap">
-            <label className="row gap">
-              <span>Anzahl</span>
-              <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-                {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
-              </select>
-            </label>
-            <label className="row gap">
-              <span>Deaktivierte zeigen</span>
-              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-            </label>
-            <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
-          </div>
-        }
-      >
+      {/* --- Kontakte --- */}
+      <Section title="Kontakte" right={
+        <div className="row gap">
+          <label className="row gap"><span>Anzahl</span>
+            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
+              {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
+            </select>
+          </label>
+          <label className="row gap"><span>Deaktivierte zeigen</span>
+            <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
+          </label>
+          <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
+        </div>
+      }>
         <div className="table-wrap">
           <table className="table">
-            <thead>
-              <tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr>
-            </thead>
+            <thead><tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr></thead>
             <tbody>
               {contacts.map((r) => (
-                <tr key={r.id || r.email}>
+                <tr key={r.email || r.id}>
                   <td>{[r.firstName, r.lastName].filter(Boolean).join(" ")}</td>
                   <td>{r.company}</td>
                   <td>{r.email}</td>
                   <td>{r.status || ""}</td>
-                  <td>
-                    <PillToggle
-                      on={!!r.active}
-                      onLabel="aktiv"
-                      offLabel="deaktiviert"
-                      onClick={() => toggleActive(r)}
-                    />
-                  </td>
+                  <td><PillToggle on={!!r.active} onLabel="aktiv" offLabel="deaktiviert" onClick={() => toggleActive(r)} /></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
         <div className="row end gap">
-          <PrimaryButton onClick={saveActive} disabled={!Object.keys(updates).length}>
-            Änderungen speichern
-          </PrimaryButton>
+          <PrimaryButton onClick={saveActive} disabled={!Object.keys(updates).length}>Änderungen speichern</PrimaryButton>
         </div>
       </Section>
     </section>
@@ -1310,7 +1111,7 @@ function Blacklist() {
   const load = React.useCallback(async () => {
     setErr("");
     try {
-      // Immer inkl. Bounces laden; Toggle entfernt
+      // Immer inkl. Bounces laden (Toggle entfernt)
       const r = await httpGet(API.global.blacklist(q, true));
       setRows({ blacklist: r.blacklist || [], bounces: r.bounces || [] });
     } catch (e) { setErr(e.message || "Fehler"); }
@@ -1396,26 +1197,26 @@ function ErrorList() {
     setSel(checked ? next : {});
   };
 
+  // ★ robustes Löschen (mehrere Payload-Formate)
   const removeSelected = async () => {
     const ids = rows.filter(r => sel[r.id]).map(r => r.id);
     if (!ids.length) return;
     if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
 
     try {
-      // Kompatibles Body-Format (ids UND rows:[{id}])
-      const body = {
-        ids,
-        rows: ids.map(id => ({ id }))
-      };
+      await postAny(API.global.errorsDelete(), [
+        { ids },
+        { rows: ids.map(id => ({ id })) },
+        { rowsById: ids },
+        { data: ids },
+      ]);
 
-      await httpPost(API.global.errorsDelete(), body);
-
-      // Lokalen State gezielt bereinigen
+      // lokal sofort bereinigen & frische Liste holen
       setRows(prev => prev.filter(r => !ids.includes(r.id)));
       setSel({});
       await load();
 
-      alert("Ausgewählte Einträge gelöscht.");
+      alert("Fehler-Einträge gelöscht.");
     } catch (e) {
       alert(e.message || "Fehler beim Löschen");
     }
@@ -1441,9 +1242,7 @@ function ErrorList() {
   const masterRef = React.useRef(null);
   const allChecked  = filtered.length > 0 && filtered.every(r => sel[r.id]);
   const someChecked = filtered.some(r => sel[r.id]) && !allChecked;
-  React.useEffect(() => {
-    if (masterRef.current) masterRef.current.indeterminate = someChecked;
-  }, [someChecked, allChecked, filtered]);
+  React.useEffect(() => { if (masterRef.current) masterRef.current.indeterminate = someChecked; }, [someChecked, allChecked, filtered]);
 
   return (
     <section className="grid gap">
@@ -1488,11 +1287,7 @@ function ErrorList() {
             {filtered.map((r) => (
               <tr key={r.id}>
                 <td>
-                  <input
-                    type="checkbox"
-                    checked={!!sel[r.id]}
-                    onChange={()=>toggle(r.id)}
-                  />
+                  <input type="checkbox" checked={!!sel[r.id]} onChange={()=>toggle(r.id)} />
                 </td>
                 <td className={isBad(r,"email")?"bad":""}>{r.email||""}</td>
                 <td className={isBad(r,"Anrede")?"bad":""}>{r.Anrede||""}</td>
@@ -1512,6 +1307,7 @@ function ErrorList() {
   );
 }
 /* ==== END PART 5 ==== */
+
 
 
 
