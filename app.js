@@ -586,25 +586,6 @@ function Templates() {
     setTotalSteps(clampSteps(tsRaw));
   }, [tpl]);
 
-  const ensureSteps = (desired) => {
-    const d = clampSteps(desired);
-    const currentLen = (tpl?.steps || []).length;
-    if (d > currentLen) {
-      const toAdd = d - currentLen;
-      const baseIndex = currentLen;
-      setListByScope(prev => prev.map(t => {
-        if (t.name !== activeName) return t;
-        const nextSteps = [...(t.steps || [])];
-        for (let i = 0; i < toAdd; i++) {
-          const stepNumber = String(baseIndex + i + 1);
-          nextSteps.push({ step: stepNumber, subject: "", body_html: "", delay_days: 0 });
-        }
-        return { ...t, steps: nextSteps };
-      }));
-    }
-    setTotalSteps(d);
-  };
-
   const updateStep = (idx, patch) => {
     setListByScope(prev => prev.map(t =>
       t.name !== activeName ? t : ({ ...t, steps: (t.steps || []).map((s, i) => i === idx ? { ...s, ...patch } : s) })
@@ -642,14 +623,16 @@ function Templates() {
     setTotalSteps(1);
   };
 
-  // Delete stabil: Backend löschen + reload()
+  // Löschen (lokal/global)
   const removeTemplate = async () => {
     if (!activeName) return;
     if (!confirm(`Template "${activeName}" wirklich löschen?`)) return;
     try {
       if (scope === "local") await httpPost(API.deleteTemplate(activeName), {});
       else await httpPost(API.global.deleteTemplate(activeName), {});
-      await load();
+      setListByScope(prev => prev.filter(t => t.name !== activeName));
+      const nextName = (scope === "local" ? localList : globalList).find(t => t.name !== activeName)?.name || "";
+      setActiveName(nextName);
       alert("Template gelöscht");
     } catch (e) {
       alert(e.message || "Fehler beim Löschen");
@@ -681,9 +664,16 @@ function Templates() {
   const setUpdateSubjectRef = (el, updater) => { if (el) el._updateSubject = updater; };
   const setUpdateBodyRef = (el, updater) => { if (el) el._updateBody = updater; };
 
+  // Sichtbare Steps
   const visibleSteps = React.useMemo(() => {
     const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
     const n = clampSteps(totalSteps);
+    // ggf. Steps auffüllen bis n
+    if (arr.length < n) {
+      const fill = [];
+      for (let i = arr.length; i < n; i++) fill.push({ step: String(i+1), subject:"", body_html:"", delay_days:0 });
+      return [...arr, ...fill];
+    }
     return arr.slice(0, n);
   }, [tpl, totalSteps]);
 
@@ -715,38 +705,20 @@ function Templates() {
           <div className="card">
             <div className="row gap vcenter">
               <Field label="Total Steps">
+                {/* Nur 1–5 Buttons, keine zweite Steuerung */}
                 <div className="row gap">
                   {[1,2,3,4,5].map(n => (
                     <button
                       key={n}
-                      onClick={() => ensureSteps(n)}  // <- füllt bei Bedarf auf
+                      onClick={() => setTotalSteps(n)}
                       className={cn("btn", totalSteps===n && "primary")}
                       type="button"
                     >{n}</button>
                   ))}
-                  <div className="row gap">
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => ensureSteps(totalSteps-1)}
-                    >–</button>
-                    <input
-                      type="number"
-                      min="1" max="5"
-                      value={clampSteps(totalSteps)}
-                      onChange={(e) => ensureSteps(e.target.value)}
-                      style={{ width: 64 }}
-                    />
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => ensureSteps(totalSteps+1)}
-                    >+</button>
-                  </div>
                 </div>
               </Field>
               <div className="muted" style={{ alignSelf: 'end' }}>
-                von {(tpl.steps || []).length}
+                von {(tpl?.steps || []).length}
               </div>
             </div>
           </div>
@@ -809,6 +781,11 @@ function Templates() {
   );
 }
 /* ==== END PART 3 ==== */
+
+
+
+
+
 
 
 
@@ -1328,7 +1305,7 @@ function ErrorList() {
 
 
 /* ==== PART 6 ==== */
-/** ============ KONTAKTE (upload + validation -> error_list COPY) ============ */
+/** ============ KONTAKTE (upload + validation -> error_list) ============ */
 function Kontakte() {
   const [file, setFile] = React.useState(null);
   const [rows, setRows] = React.useState([]);
@@ -1346,6 +1323,13 @@ function Kontakte() {
       setInfo(`Gefunden: ${parsed.length} Zeilen (CSV)`);
     } else if (/\.(pdf)$/i.test(f.name)) {
       try {
+        // Guard, falls pdf.js/parsePDF nicht geladen sind
+        if (typeof parsePDF !== "function" || typeof pdfjsLib === "undefined") {
+          alert("PDF-Import ist derzeit nicht verfügbar (pdf.js nicht geladen). Bitte CSV verwenden.");
+          setRows([]);
+          setInfo("PDF-Import nicht verfügbar");
+          return;
+        }
         const parsed = await parsePDF(f);
         setRows(parsed);
         setInfo(`Gefunden: ${parsed.length} Zeilen (PDF)`);
@@ -1367,7 +1351,7 @@ function Kontakte() {
   const upload = async () => {
     if (!rows.length) return alert("Keine gültigen Zeilen");
 
-    // Globale Blacklist/Bounces (optional)
+    // Globale Blacklist/Bounces
     let g = { blacklist: [], bounces: [] };
     try { g = await httpGet(API.global.blacklist("", true)); } catch (e) {}
 
@@ -1376,13 +1360,12 @@ function Kontakte() {
 
     for (const r of rows) {
       let reason = "";
-      if (!requiredOk(r))              reason = "MISSING_REQUIRED";
-      else if (!phoneOk(r))           reason = "MISSING_PHONE_OR_MOBILE";
-      else if ((g.blacklist||[]).includes(r.email)) reason = "BLACKLIST";
-      else if ((g.bounces||[]).includes(r.email))   reason = "BOUNCE";
+      if (!requiredOk(r))                              reason = "MISSING_REQUIRED";
+      else if (!phoneOk(r))                            reason = "MISSING_PHONE_OR_MOBILE";
+      else if ((g.blacklist||[]).includes(r.email))    reason = "BLACKLIST";
+      else if ((g.bounces||[]).includes(r.email))      reason = "BOUNCE";
 
       if (reason) {
-        // ★ COPY to error_list (nicht entfernen)
         errors.push({
           email: r.email || "",
           Anrede: r.Anrede || "",
@@ -1393,23 +1376,20 @@ function Kontakte() {
           mobile: r.mobile || "",
           reason
         });
-        // Wichtig: NICHT aus rows entfernen — UI behält alle Zeilen
       } else {
         valid.push(r);
       }
     }
 
     try {
-      if (errors.length) {
-        await httpPost(API.global.errorsAdd(), { rows: errors });
-      }
+      if (errors.length) await httpPost(API.global.errorsAdd(), { rows: errors });
       if (valid.length) {
         await httpPost(API.upload(), { rows: valid, mode });
         alert(`Upload gesendet. OK: ${valid.length}${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
       } else {
         alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste kopiert.`);
       }
-      // ★ rows UNVERÄNDERT lassen, damit die Upload-Ansicht gleich bleibt (Anforderung)
+      // rows unverändert lassen (Vorschau bleibt)
     } catch (e) {
       alert(e.message || "Fehler beim Upload");
     }
@@ -1498,4 +1478,5 @@ function Kontakte() {
   }
 })();
 /* ==== END PART 6 ==== */
+
                                                         
