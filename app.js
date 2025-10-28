@@ -1,18 +1,21 @@
-// ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
+/* ==== PART 1 ==== */
+/* ===== avus smart-cap Dashboard – Core, API, Helpers, UI Primitives ===== */
+
+/** React aliases (optional) */
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
 /** =====================
  *  CONFIG / API PATHS
  *  ===================== */
-const API_BASE =
-  "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
+const API_BASE = "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
-/** --- API: wir übergeben path=api/... (keine auto-Varianten) --- */
+/* --- API (ohne führenden Slash in path) --- */
 const API = {
   // LOCAL
   contacts: (limit, includeInactive = true) =>
     `${API_BASE}?path=api/contacts&limit=${encodeURIComponent(limit || 50)}&includeInactive=${includeInactive ? 1 : 0}`,
   stats: () => `${API_BASE}?path=api/stats`,
+
   templates: () => `${API_BASE}?path=api/templates`,
   saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
@@ -57,77 +60,207 @@ const API = {
   },
 };
 
-/** ============ HTTP Layer (Dual-Path: Body-first, dann Query+Body, dann GET) ============ */
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+/* --- HTTP-Layer (POST-only Reads, kein Preflight, Retry/Backoff) --- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function extractPath(url){
-  try { return new URL(url).searchParams.get("path") || ""; } catch { return ""; }
-}
-function stripPath(url){
-  try { const u=new URL(url); u.searchParams.delete("path"); return u.toString(); }
-  catch { return url; }
-}
-async function tryFetch(url, options, tries=3){
-  let last;
-  for (let i=0;i<tries;i++){
-    try{
+async function fetchWithRetry(url, options = {}, tries = 5) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
       const res = await fetch(url, options);
+      // Retry bei 429/503
+      if (res.status === 429 || res.status === 503) {
+        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
+        await sleep(wait);
+        continue;
+      }
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 160)}`);
+      }
       const txt = await res.text();
-      if (!res.ok) throw new Error(`HTTP ${res.status} @ ${url}: ${txt.slice(0,160)}`);
       try { return JSON.parse(txt); } catch { return { text: txt }; }
-    }catch(e){ last=e; await sleep(120*(i+1)); }
+    } catch (err) {
+      lastErr = err;
+      await sleep(150 * (i + 1));
+    }
   }
-  throw last || new Error("Request failed");
+  throw lastErr || new Error(`Request failed: ${url}`);
 }
-async function robustRequest(url, body){
-  const path = extractPath(url);
-  const ts = Date.now();
 
-  // 1) POST (Body-only path)
-  try{
-    const rsp = await tryFetch(stripPath(url), {
-      method: "POST",
-      // KEINE exotischen Header, um Preflight zu vermeiden
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ path, ...body, _t: ts })
-    });
-    if (String(rsp?.error||"").toLowerCase() !== "not found") return rsp;
-  }catch{}
-
-  // 2) POST (Query+Body)
-  try{
-    const rsp = await tryFetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ path, ...body, _t: ts })
-    });
-    if (String(rsp?.error||"").toLowerCase() !== "not found") return rsp;
-  }catch{}
-
-  // 3) GET (Query)
-  try{
-    const rsp = await tryFetch(url + (url.includes("?")?"&":"?") + "_=" + ts, { method: "GET" });
-    if (String(rsp?.error||"").toLowerCase() !== "not found") return rsp;
-  }catch{}
-
-  throw new Error(`Endpoint not found for "${path}"`);
+// Reads → POST ohne Body, damit kein CORS-Preflight entsteht
+async function httpGet(url) {
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: "",
+  });
 }
-async function httpGet(url){ return robustRequest(url, {}); }
-async function httpPost(url, body){ return robustRequest(url, body || {}); }
+async function httpPost(url, body) {
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(body || {}),
+  });
+}
 
 /** ============ helpers ============ */
-function cn(){ return Array.from(arguments).filter(Boolean).join(" "); }
-function isEmail(x){ return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
+function cn(...xs) { return xs.filter(Boolean).join(" "); }
+function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
-function toTF(v){ return v ? "TRUE" : "FALSE"; }          // ★ NEU
+const toTF = asBoolTF; // Alias, falls irgendwo noch benutzt
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
+// Steps-Helfer (max 5)
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
 /** ============ CSV/PDF parsing ============ */
-// (…dein parseCSV / parsePDF bleibt unverändert…)
+function detectDelimiter(headerLine) {
+  const c = (s, ch) => (s.match(new RegExp(`\\${ch}`, "g")) || []).length;
+  const candidates = [
+    { d: ";", n: c(headerLine, ";") },
+    { d: ",", n: c(headerLine, ",") },
+    { d: "\t", n: c(headerLine, "\t") },
+  ];
+  candidates.sort((a, b) => b.n - a.n);
+  return candidates[0].n > 0 ? candidates[0].d : ",";
+}
+function normalizeKey(k) {
+  const s = String(k || "").toLowerCase().replace(/\s+/g, "").replace(/[-_]/g, "");
+  if (/^(email|e?mail|mailadresse)$/.test(s)) return "email";
+  if (/^(lastname|nachname|name$)$/.test(s)) return "lastName";
+  if (/^(firstname|vorname)$/.test(s)) return "firstName";
+  if (/^(company|firma|unternehmen|organisation)$/.test(s)) return "company";
+  if (/^(position|titel|rolle)$/.test(s)) return "position";
+  if (/^(phone|telefon|telefonnummer|tel)$/.test(s)) return "phone";
+  if (/^(mobile|handy|mobil)$/.test(s)) return "mobile";
+  if (/^(anrede|salutation|gruß|gruss|grussformel)$/.test(s)) return "Anrede";
+  return k;
+}
+function splitCSV(line, delim) {
+  const out = []; let cur = "", inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+      else inQ = !inQ;
+    } else if (ch === delim && !inQ) { out.push(cur); cur = ""; }
+    else { cur += ch; }
+  }
+  out.push(cur);
+  return out;
+}
+async function parseCSV(file) {
+  const textRaw = await file.text();
+  const text = textRaw.replace(/^\uFEFF/, "");
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (!lines.length) return [];
+  const delim = detectDelimiter(lines[0]);
+  const headersRaw = splitCSV(lines[0], delim).map((h) => h.trim());
+  const headers = headersRaw.map(normalizeKey);
+  const data = [];
+  for (let r = 1; r < lines.length; r++) {
+    const cols = splitCSV(lines[r], delim).map((c) => c.trim());
+    const rec = {}; headers.forEach((h, i) => (rec[h] = cols[i] !== undefined ? cols[i] : ""));
+    const email = rec.email || ""; const last = rec.lastName || ""; const comp = rec.company || "";
+    if (email && last && comp) {
+      data.push({
+        email: email, lastName: last, company: comp,
+        firstName: rec.firstName || "", position: rec.position || "",
+        phone: rec.phone || "", mobile: rec.mobile || "",
+        Anrede: rec.Anrede || "",
+      });
+    }
+  }
+  return data;
+}
+async function parsePDF(file) {
+  const arrayBuf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+  async function pageToLines(page) {
+    const tc = await page.getTextContent();
+    const items = tc.items.map((it) => {
+      const [a, b, c, d, e, f] = it.transform;
+      return { x: e, y: f, str: it.str };
+    });
+    items.sort((p, q) => q.y - p.y || p.x - q.x);
+    const lines = []; const EPS = 2.5;
+    for (const t of items) { const L = lines.find((l) => Math.abs(l.y - t.y) < EPS);
+      if (L) L.items.push(t); else lines.push({ y: t.y, items: [t] }); }
+    return lines.map((L) => { L.items.sort((p, q) => p.x - q.x);
+      return { y: L.y, items: L.items, text: L.items.map((i) => i.str).join(" ") }; });
+  }
+  function detectColumns(headerLine) {
+    const map = {};
+    if (headerLine && headerLine.items) {
+      for (const it of headerLine.items) {
+        const s = it.str.toLowerCase();
+        if (!map.firma && s.includes("firma")) map.firma = it.x;
+        if (!map.anrede && s.includes("anrede")) map.anrede = it.x;
+        if (!map.vorname && s.includes("vorname")) map.vorname = it.x;
+        if (!map.nachname && s.includes("nachname")) map.nachname = it.x;
+        if (!map.telefon && s.includes("telefon")) map.telefon = it.x;
+        if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr.")))
+          map.email = it.x;
+      }
+    }
+    return { firma: map.firma ?? 30, anrede: map.anrede ?? 170, vor: map.vorname ?? 230, nach: map.nachname ?? 310, tel: map.telefon ?? 430, mail: map.email ?? 520 };
+  }
+  function sliceByColumns(line, cols) {
+    const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
+    for (const it of line.items) {
+      const x = it.x;
+      const key = x < cols.anrede ? "firma" : x < cols.vor ? "anrede" : x < cols.nach ? "vor" : x < cols.tel ? "nach" : x < cols.mail ? "tel" : "mail";
+      buckets[key].push(it.str);
+    }
+    const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
+    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
+  }
+  const collected = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const lines = await pageToLines(page);
+    const header = lines.find((L) => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
+    const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
+    for (const L of lines) {
+      if (header && Math.abs(L.y - header.y) < 3) continue;
+      const rec = sliceByColumns(L, cols);
+      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
+      const minimal = rec.company && rec.last;
+      if (hasEmail || minimal) {
+        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
+      }
+    }
+  }
+  const seen = new Set(); const rows = [];
+  for (const r of collected) {
+    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); rows.push(r); }
+  }
+  return rows;
+}
 
+/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
+function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
+  return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
+}
+function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
+function Section({ title, right, children, className }) {
+  return (
+    <section className={cn("card", className)}>
+      <div className="row between vcenter">
+        <h3>{title}</h3>{right}
+      </div>
+      <div className="spacer-8" />
+      {children}
+    </section>
+  );
+}
+function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
+function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
+function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 
 /* ==== END PART 1 ==== */
+
 
 
 
