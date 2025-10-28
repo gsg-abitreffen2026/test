@@ -1,4 +1,5 @@
-/* ==== PART 1 ==== */
+/*-- ==== PART 1 (vollständig, mit Path-Fallbacks & GET/POST-Umschalter) ==== --*/
+<script type="text/babel">
 // ===== avus smart-cap Dashboard (global/local archives, todos, signatures, error list) =====
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
@@ -8,7 +9,14 @@ const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 const API_BASE =
   "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
 
-// --- API (ohne führenden Slash in ?path=) ---
+/** 
+ * Umschalter: Manche GAS-Deployments akzeptieren Reads nur per GET.
+ * Standard: POST (vermeidet CORS-Preflight in vielen Fällen).
+ * Wenn du im Network weiterhin 405/Preflight-Probleme siehst, setze auf "GET".
+ */
+const READ_METHOD = "POST"; // oder "GET"
+
+/** --- API: wir bauen weiterhin ?path=api/... URLs (Primärpfad) --- */
 const API = {
   // LOCAL
   contacts: (limit, includeInactive = true) =>
@@ -59,8 +67,41 @@ const API = {
   },
 };
 
-// --- HTTP-Layer (POST für Reads, vermeidet Preflight 405; mit Retry/Backoff) ---
-async function fetchWithRetry(url, options = {}, tries = 5) {
+/** ============ HTTP Layer mit Path-Fallbacks ============ */
+function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+/** Varianten für path erzeugen, um Router-Abweichungen abzufangen */
+function pathVariants(p) {
+  const s = decodeURIComponent(String(p || "").trim());
+  const noSlash = s.replace(/^\/+/, "");
+  const variants = new Set();
+
+  // Original
+  variants.add(noSlash);
+  // ohne führendes "api/"
+  if (noSlash.startsWith("api/")) variants.add(noSlash.slice(4));
+  // mit führendem "api/" (falls original ohne war)
+  if (!noSlash.startsWith("api/")) variants.add("api/" + noSlash);
+  // mit führendem Slash
+  variants.add("/" + noSlash);
+  // mit führendem Slash + ohne "api/"
+  if (noSlash.startsWith("api/")) variants.add("/" + noSlash.slice(4));
+  // fallback "v1"
+  variants.add(noSlash.replace(/^api\//,"api/v1/"));
+  variants.add(noSlash.replace(/^/,"api/v1/"));
+
+  return Array.from(variants);
+}
+
+/** URL neu mit anderer path-Variante bauen */
+function withPathVariant(urlString, newPath) {
+  const url = new URL(urlString);
+  url.searchParams.set("path", newPath);
+  return url.toString();
+}
+
+/** Fetch + Retry */
+async function fetchWithRetry(url, options = {}, tries = 4) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
@@ -71,8 +112,8 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
         continue;
       }
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 160)}`);
+        const txt = await res.text().catch(()=> "");
+        throw new Error(`HTTP ${res.status} @ ${url}: ${txt.slice(0,160)}`);
       }
       const txt = await res.text();
       try { return JSON.parse(txt); } catch { return { text: txt }; }
@@ -84,44 +125,53 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
   throw lastErr || new Error(`Request failed: ${url}`);
 }
 
+/** Kern: automatischer Path-Fallback bei {error:"not found"} */
+async function requestWithPathFallback(urlString, options, triesPerVariant = 1) {
+  const url = new URL(urlString);
+  const originalPath = url.searchParams.get("path") || "";
+  const variants = pathVariants(originalPath);
+
+  for (const pv of variants) {
+    const tryUrl = withPathVariant(urlString, pv);
+    const rsp = await fetchWithRetry(tryUrl, options, triesPerVariant);
+    if (rsp && !(String(rsp.error || "").toLowerCase() === "not found")) {
+      return rsp; // Erfolg oder anderer Fehler, aber nicht "not found"
+    }
+    // sonst nächste Variante
+  }
+  // Alle Varianten lieferten "not found"
+  const last = variants[variants.length - 1];
+  throw new Error(`Endpoint not found for "${originalPath}" (tried: ${variants.join(", ")})`);
+}
+
+/** Öffentliche Helper (nutzen den Fallback automatisch) */
 async function httpGet(url) {
-  return fetchWithRetry(url, {
+  if (READ_METHOD === "GET") {
+    return requestWithPathFallback(url, { method: "GET" });
+  }
+  // POST für Reads (oft weniger CORS-Probleme)
+  return requestWithPathFallback(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "", // POST als Read → kein Preflight
+    body: "",
   });
 }
+
 async function httpPost(url, body) {
-  return fetchWithRetry(url, {
+  // Klassisches POST mit Path-Fallback
+  return requestWithPathFallback(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(body || {}),
   });
 }
 
-// === Robust-POST: probiert mehrere Payload-Varianten (wie Templates/Signaturen) ===
-async function postAny(url, bodies) {
-  let lastErr;
-  for (const body of bodies) {
-    try {
-      return await httpPost(url, body);
-    } catch (e) {
-      lastErr = e;
-    }
-  }
-  throw lastErr || new Error("All post variants failed");
-}
-
-// TRUE/FALSE Normalizer
-const toTF = (v) => (v ? "TRUE" : "FALSE");
-
 /** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
-// Steps max. 5
+// ★ Steps-Helfer (max 5)
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
 
 /** ============ CSV/PDF parsing ============ */
@@ -180,43 +230,67 @@ async function parseCSV(file) {
   }
   return data;
 }
-
-// PDF-Parser mit Guard: wenn pdfjsLib fehlt → leeres Ergebnis statt Fehler
 async function parsePDF(file) {
-  if (typeof pdfjsLib === "undefined") {
-    console.warn("[parsePDF] pdfjsLib fehlt – PDF wird übersprungen.");
-    return [];
+  const arrayBuf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
+  async function pageToLines(page) {
+    const tc = await page.getTextContent();
+    const items = tc.items.map((it) => { const [a,b,c,d,e,f]=it.transform; return { x:e, y:f, str:it.str }; });
+    items.sort((p, q) => q.y - p.y || p.x - q.x);
+    const lines = []; const EPS = 2.5;
+    for (const t of items) { const L = lines.find((l) => Math.abs(l.y - t.y) < EPS); if (L) L.items.push(t); else lines.push({ y: t.y, items: [t] }); }
+    return lines.map((L) => { L.items.sort((p, q) => p.x - q.x); return { y: L.y, items: L.items, text: L.items.map((i) => i.str).join(" ") }; });
   }
-  // ——— Optional: hier könnte dein vollwertiger PDF-Parser stehen.
-  // Für Stabilität nutzen wir einen sicheren Minimal-Reader, der notfalls leer zurückgibt.
-  try {
-    const arrayBuf = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuf }).promise;
-    const collected = [];
-    for (let p = 1; p <= pdf.numPages; p++) {
-      const page = await pdf.getPage(p);
-      const tc = await page.getTextContent();
-      const text = tc.items.map(it => it.str).join(" ");
-      // Primitive Heuristik: E-Mails erkennen
-      const emails = (text.match(/[^\s@]+@[^\s@]+\.[^\s@]+/g) || []);
-      emails.forEach(em => {
-        collected.push({ email: em, firstName: "", lastName: "", company: "", position: "", phone: "", mobile: "", Anrede: "" });
-      });
+  function detectColumns(headerLine) {
+    const map = {};
+    if (headerLine && headerLine.items) {
+      for (const it of headerLine.items) {
+        const s = it.str.toLowerCase();
+        if (!map.firma && s.includes("firma")) map.firma = it.x;
+        if (!map.anrede && s.includes("anrede")) map.anrede = it.x;
+        if (!map.vorname && s.includes("vorname")) map.vorname = it.x;
+        if (!map.nachname && s.includes("nachname")) map.nachname = it.x;
+        if (!map.telefon && s.includes("telefon")) map.telefon = it.x;
+        if (!map.email && (s.includes("e-mail") || s.includes("email") || s.includes("anspr."))) map.email = it.x;
+      }
     }
-    // Dedupe by email
-    const seen = new Set(); const out = [];
-    for (const r of collected) {
-      const key = r.email.toLowerCase();
-      if (!seen.has(key)) { seen.add(key); out.push(r); }
-    }
-    return out;
-  } catch (err) {
-    console.warn("[parsePDF] Fehler beim Lesen:", err);
-    return [];
+    return { firma: map.firma ?? 30, anrede: map.anrede ?? 170, vor: map.vorname ?? 230, nach: map.nachname ?? 310, tel: map.telefon ?? 430, mail: map.email ?? 520 };
   }
+  function sliceByColumns(line, cols) {
+    const buckets = { firma: [], anrede: [], vor: [], nach: [], tel: [], mail: [] };
+    for (const it of line.items) {
+      const x = it.x;
+      const key = x < cols.anrede ? "firma" : x < cols.vor ? "anrede" : x < cols.nach ? "vor" : x < cols.tel ? "nach" : x < cols.mail ? "tel" : "mail";
+      buckets[key].push(it.str);
+    }
+    const join = (arr) => arr.join(" ").replace(/\s+/g, " ").trim();
+    return { company: join(buckets.firma), Anrede: join(buckets.anrede), first: join(buckets.vor), last: join(buckets.nach), phone: join(buckets.tel), email: join(buckets.mail) };
+  }
+  const collected = [];
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const lines = await pageToLines(page);
+    const header = lines.find((L) => /firma/i.test(L.text) && /anrede/i.test(L.text) && /vorname/i.test(L.text) && /nachname/i.test(L.text));
+    const cols = header ? detectColumns(header) : detectColumns(lines[0] || { items: [] });
+    for (const L of lines) {
+      if (header && Math.abs(L.y - header.y) < 3) continue;
+      const rec = sliceByColumns(L, cols);
+      const hasEmail = /\S+@\S+\.\S+/.test(rec.email);
+      const minimal = rec.company && rec.last;
+      if (hasEmail || minimal) {
+        collected.push({ email: hasEmail ? rec.email : "", firstName: rec.first, lastName: rec.last, company: rec.company, position: "", phone: rec.phone || "", mobile: "", Anrede: rec.Anrede || "" });
+      }
+    }
+  }
+  const seen = new Set(); const rows = [];
+  for (const r of collected) {
+    const key = r.email ? `e:${r.email.toLowerCase()}` : `c:${(r.company || "").toLowerCase()}|${(r.lastName || "").toLowerCase()}`;
+    if (!seen.has(key)) { seen.add(key); rows.push(r); }
+  }
+  return rows;
 }
 
-/** ============ UI helpers ============ */
+/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
   return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
 }
@@ -227,7 +301,10 @@ function Section({ title, right, children, className }) {
 function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
 function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
-/* ==== END PART 1 ==== */
+</script>
+  
+/*-- ==== END PART 1 ==== --*/
+
 
 
 
