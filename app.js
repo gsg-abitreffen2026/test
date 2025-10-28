@@ -57,10 +57,13 @@ const API = {
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
     errorsAdd: () => `${API_BASE}?path=api/global/error_list/add`,
     errorsDelete: () => `${API_BASE}?path=api/global/error_list/delete`,
+
+    // ★ NEU: Soft-Delete/Sichtbarkeit in der Fehlerliste
+    errorsVisible: () => `${API_BASE}?path=api/global/error_list/visible`,
   },
 };
 
-/* --- HTTP-Layer (Retry/Backoff) --- */
+/* --- HTTP-Layer (POST-only Reads, kein Preflight, Retry/Backoff) --- */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function fetchWithRetry(url, options = {}, tries = 5) {
@@ -88,21 +91,14 @@ async function fetchWithRetry(url, options = {}, tries = 5) {
   throw lastErr || new Error(`Request failed: ${url}`);
 }
 
-/* === NEW: Helper für TRUE/FALSE-Strings und Fehlerprüfung === */
-const strTF = (b) => (b ? 'TRUE' : 'FALSE');
-function ensureOk(res, ctx = 'Request') {
-  if (res && typeof res === 'object' && res.error) {
-    throw new Error(`${ctx}: ${res.error}`);
-  }
-  return res;
-}
-
-/* === Reads → echtes GET, damit sicher doGet === */
+// Reads → POST ohne Body, damit kein CORS-Preflight entsteht
 async function httpGet(url) {
-  return fetchWithRetry(url, { method: "GET" });
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: "",
+  });
 }
-
-/* === Writes → POST mit JSON-Body (unverändert) === */
 async function httpPost(url, body) {
   return fetchWithRetry(url, {
     method: "POST",
@@ -119,6 +115,14 @@ const toTF = asBoolTF; // Alias, falls irgendwo noch benutzt
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
 // Steps-Helfer (max 5)
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
+
+// ★ NEU: Standardisierte Ergebnisprüfung aus API-Responses
+function ensureOk(res, actionLabel = "Aktion") {
+  // Akzeptiere {ok:true} oder Objekte ohne "error"-Key
+  if (res && (res.ok === true || !res.error)) return true;
+  const msg = (res && (res.error || res.message)) || "Unbekannter Fehler";
+  throw new Error(`${actionLabel} fehlgeschlagen: ${msg}`);
+}
 
 /** ============ CSV/PDF parsing ============ */
 function detectDelimiter(headerLine) {
@@ -267,6 +271,7 @@ function TextButton({ children, onClick, disabled }) { return (<button className
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 
 /* ==== END PART 1 ==== */
+
 
 
 
@@ -1270,7 +1275,13 @@ function ErrorList() {
         const id = String(x.id || x._id || x.uuid || `row-${i}-${(x.email||'')}`);
         if (!map.has(id)) map.set(id, { ...x, id });
       }
-      setRows(Array.from(map.values()));
+
+      // ★ NEU: lokal nur sichtbare zeigen (falls Backend-Spalte noch fehlt)
+      const all = Array.from(map.values());
+      const onlyVisible = all.filter(x => String(x.visible || '').toUpperCase() !== 'FALSE');
+
+      setRows(onlyVisible);
+      setSel({});
     } catch (e) { setErr(e.message || "Fehler"); }
   }, []);
   React.useEffect(() => { load(); }, [load]);
@@ -1283,17 +1294,19 @@ function ErrorList() {
     setSel(checked ? next : {});
   };
 
+  // ★ NEU: Soft-Hide via visible=FALSE statt Hard-Delete
   const removeSelected = async () => {
     const ids = rows.filter(r => sel[r.id]).map(r => r.id);
     if (!ids.length) return;
-    if (!confirm(`${ids.length} Einträge wirklich löschen?`)) return;
+    if (!confirm(`${ids.length} Einträge als erledigt markieren (ausblenden)?`)) return;
     try {
-      const res = await httpPost(API.global.errorsDelete(), { ids });
-      ensureOk(res, 'Fehlerliste löschen');
-      setRows(prev => prev.filter(r => !ids.includes(r.id))); // nur selektierte entfernen
+      const res = await httpPost(API.global.errorsVisible(), { ids, visible: false });
+      ensureOk(res, 'Fehlerliste ausblenden');
+      // lokal sofort aus UI entfernen
+      setRows(prev => prev.filter(r => !ids.includes(r.id)));
       setSel({});
     } catch (e) {
-      alert(e.message || "Fehler beim Löschen");
+      alert(e.message || "Fehler beim Ausblenden");
     }
   };
 
@@ -1333,10 +1346,10 @@ function ErrorList() {
         </select>
         <label className="row gap">
           <input type="checkbox" checked={onlyEmpty} onChange={(e)=>setOnlyEmpty(e.target.checked)} />
-          nur leere anzeigen
+        nur leere anzeigen
         </label>
         <TextButton onClick={load}>Neu laden</TextButton>
-        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>Erledigt (löschen)</PrimaryButton>
+        <PrimaryButton onClick={removeSelected} disabled={!filtered.some(r => sel[r.id])}>Erledigt (ausblenden)</PrimaryButton>
       </Toolbar>
 
       <div className="table-wrap">
@@ -1388,7 +1401,6 @@ function ErrorList() {
   );
 }
 /* ==== END PART 5 ==== */
-
 
 
 
