@@ -1,5 +1,4 @@
-/* ==== PART 1 ==== */
-/* ===== avus smart-cap Dashboard – Core, API, Helpers, UI Primitives ===== */
+/* ===== avus smart-cap Dashboard – Core, API, Helpers, UI Primitives (PART 1) ===== */
 
 /** React aliases (optional) */
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
@@ -19,13 +18,13 @@ const API = {
   templates: () => `${API_BASE}?path=api/templates`,
   saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
+  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`, // (Server: optional / fallback)
 
   signatures: () => `${API_BASE}?path=api/signatures`,
   saveSignature: () => `${API_BASE}?path=api/signatures/save`,
   setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
   signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
+  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`, // (Server: optional / fallback)
 
   blacklistLocal: (q, includeBounces) =>
     `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
@@ -44,12 +43,12 @@ const API = {
     templates: () => `${API_BASE}?path=api/global/templates`,
     saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
     setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
-    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`,
+    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`, // (Server: optional / fallback)
 
     signatures: () => `${API_BASE}?path=api/global/signatures`,
     saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
     setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
-    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`,
+    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`, // (Server: optional / fallback)
 
     blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
@@ -57,53 +56,50 @@ const API = {
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
     errorsAdd: () => `${API_BASE}?path=api/global/error_list/add`,
     errorsDelete: () => `${API_BASE}?path=api/global/error_list/delete`,
-    // ➕ Soft-Hide Endpoint:
     errorsVisible: () => `${API_BASE}?path=api/global/error_list/visible`,
   },
 };
 
-/* --- HTTP-Layer (POST-only Reads, kein Preflight, Retry/Backoff) --- */
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/* --- HTTP-Layer: JSONP (umgeht CORS) + Method-Override für "POST" --- */
+function jsonp(url) {
+  return new Promise((resolve, reject) => {
+    const cb = "__cb" + Math.random().toString(36).slice(2);
+    const sep = url.includes("?") ? "&" : "?";
+    const src = `${url}${sep}callback=${cb}`;
+    const s = document.createElement("script");
+    let done = false;
 
-async function fetchWithRetry(url, options = {}, tries = 5) {
-  let lastErr;
-  for (let i = 0; i < tries; i++) {
-    try {
-      const res = await fetch(url, options);
-      // Retry bei 429/503
-      if (res.status === 429 || res.status === 503) {
-        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
-        await sleep(wait);
-        continue;
+    window[cb] = (data) => {
+      if (done) return;
+      done = true;
+      try { resolve(data); } finally {
+        delete window[cb];
+        s.remove();
       }
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 160)}`);
-      }
-      const txt = await res.text();
-      try { return JSON.parse(txt); } catch { return { text: txt }; }
-    } catch (err) {
-      lastErr = err;
-      await sleep(150 * (i + 1));
-    }
-  }
-  throw lastErr || new Error(`Request failed: ${url}`);
+    };
+    s.onerror = () => {
+      if (done) return;
+      done = true;
+      delete window[cb];
+      s.remove();
+      reject(new Error("JSONP network error"));
+    };
+    s.src = src;
+    document.head.appendChild(s);
+  });
 }
 
-// Reads → POST ohne Body, damit kein CORS-Preflight entsteht
+// Reads → GET via JSONP
 async function httpGet(url) {
-  return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "",
-  });
+  return jsonp(url);
 }
+
+// Writes → "POST" via Method-Override + JSONP
 async function httpPost(url, body) {
-  return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(body || {}),
-  });
+  const payload = encodeURIComponent(JSON.stringify(body || {}));
+  const sep = url.includes("?") ? "&" : "?";
+  const urlWith = `${url}${sep}method=POST&body=${payload}`;
+  return jsonp(urlWith);
 }
 
 /** ============ helpers ============ */
@@ -111,8 +107,6 @@ function cn(...xs) { return xs.filter(Boolean).join(" "); }
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
 function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
 const toTF = asBoolTF; // Alias, falls irgendwo noch benutzt
-// ➕ NEU: TRUE/FALSE String-Encoder (für Server-API)
-const strTF = (v) => (v === true || String(v).toUpperCase() === "TRUE") ? "TRUE" : "FALSE";
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
 // Steps-Helfer (max 5)
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
@@ -264,6 +258,7 @@ function TextButton({ children, onClick, disabled }) { return (<button className
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
 
 /* ==== END PART 1 ==== */
+
 
 
 
