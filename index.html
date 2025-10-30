@@ -1,32 +1,35 @@
-<!doctype html>
-<html lang="de">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Email-Akquise Dashboard</title>
 
-  <link rel="stylesheet" href="styles.css" />
+  <!-- 1) Favicon-Fix: verhindert 404 auf /favicon.ico -->
+  <!-- Variante A: Data-URI (sofort, keine Datei nötig) -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23003360'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='42' fill='white'%3EA%3C/text%3E%3C/svg%3E" />
+  <!-- Variante B (optional, wenn du eine Datei hast):
+  <link rel="icon" href="./assets/favicon.png" type="image/png" />
+  -->
 
-  <!-- React UMD -->
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
-
-  <!-- pdf.js (optional, für PDF-Upload) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
+  <!-- 2) Babel-Warnung filtern: MUSS vor babel.min.js stehen -->
   <script>
-    if (window.pdfjsLib) {
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    }
+    (function () {
+      try {
+        var _warn = console.warn;
+        console.warn = function () {
+          var s = arguments && String(arguments[0] || "");
+          if (s.indexOf("in-browser Babel transformer") !== -1) return;
+          return _warn.apply(console, arguments);
+        };
+      } catch (e) {}
+    })();
   </script>
 
-  <!-- Babel Standalone für JSX im Browser -->
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-</head>
-<body>
-  <div id="root"></div>
+  <!-- erst DANACH deine Frameworks laden -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 
-  <!-- Deine App mit JSX: unbedingt type="text/babel" -->
-  <script type="text/babel" data-presets="react,env" src="app.js?v=20251023d"></script>
-</body>
-</html>
+  <!-- Babel nur falls du noch type="text/babel" verwendest -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- deine Styles -->
+  <link rel="stylesheet" href="./style.css" />
+</head>
