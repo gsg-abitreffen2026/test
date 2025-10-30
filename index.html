@@ -1,37 +1,33 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Email-Akquise Dashboard</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Email-Akquise Dashboard</title>
 
-  <!-- Dein Stylesheet -->
-<link rel="stylesheet" href="styles.css" />
+  <!-- CSS: correct filename + relative path -->
+  <link rel="stylesheet" href="style.css" />
 
-<!-- React UMD -->
-<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <!-- React UMD -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
 
-  <!-- pdf.js (nur nötig, wenn PDF-Upload genutzt wird) -->
-  <!-- pdf.js (optional, für PDF-Upload) -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
-<script>
-    // Worker setzen, damit parsePDF zuverlässig läuft
-if (window.pdfjsLib) {
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-"https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-}
-</script>
+  <!-- pdf.js (optional, nur für PDF-Upload) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    }
+  </script>
 
-  <!-- Babel Standalone für JSX im Browser -->
+  <!-- Babel Standalone für JSX -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 </head>
 <body>
-<div id="root"></div>
+  <div id="root"></div>
 
-  <!-- Deine zusammengefügte App -->
-  <script src="app.js?v=20251023c"></script>
-  <!-- Deine App mit JSX: unbedingt type="text/babel" -->
+  <!-- Nur EINMAL laden, und zwar als Babel/JSX -->
   <script type="text/babel" data-presets="react,env" src="app.js?v=20251023d"></script>
 </body>
 </html>
