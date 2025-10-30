@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>avus smart-cap Dashboard</title>
 
-  <!-- Favicon-Fix: verhindert 404 auf /favicon.ico -->
+  <!-- Favicon (verhindert 404) -->
   <link
     rel="icon"
     href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23003360'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='42' fill='white'%3EA%3C/text%3E%3C/svg%3E"
   />
 
-  <!-- Babel-Warnung gezielt filtern (muss VOR babel.min.js stehen) -->
+  <!-- Babel-Warnung gezielt filtern -->
   <script>
     (function () {
       try {
@@ -25,38 +25,36 @@
     })();
   </script>
 
-  <!-- ===== Stylesheet-Loader mit Fallback ===== -->
-  <link rel="stylesheet" href="./style.css?v=2025-10-30-1" id="main-css" />
+  <!-- ===== CSS Loader (ohne initiales <link>, dadurch keine 404-Spam) ===== -->
   <script>
     (function () {
-      const link = document.getElementById("main-css");
-      let tried = false;
+      // Kandidaten – zuerst die URL, die laut deinem Log funktioniert
+      const origin = location.origin;
+      const repoPrefix = (function () {
+        const parts = location.pathname.split("/").filter(Boolean);
+        return parts.length > 1 ? ("/" + parts[0] + "/") : "/";
+      })();
+
+      const candidates = [
+        origin + "/style.css",              // ✅ User/Org-Pages Root (funktionierte bei dir)
+        "./style.css",                      // gleiches Verzeichnis wie index.html
+        "style.css",                        // relative Fallback
+        "./assets/style.css",               // assets/
+        origin + repoPrefix + "style.css",  // Project Pages unter /repo/style.css
+        origin + repoPrefix + "assets/style.css",
+      ];
 
       function inject(href) {
         const l = document.createElement("link");
         l.rel = "stylesheet";
-        l.href = href + "?v=" + Date.now();
+        l.href = href + (href.indexOf("?") === -1 ? "?v=" + Date.now() : "");
         l.onload = () => console.log("[css] loaded:", l.href);
         l.onerror = () => {
-          document.head.removeChild(l);
+          // still & silent: kein extra console.error, wir probieren nur den nächsten
           tryNext();
         };
         document.head.appendChild(l);
       }
-
-      const repoPrefix = (function () {
-        // Für GitHub Pages "Project Sites": /<repo>/
-        const parts = location.pathname.split("/").filter(Boolean);
-        return parts.length > 1 ? "/" + parts[0] + "/" : "/";
-      })();
-
-      const candidates = [
-        "./style.css",
-        "style.css",
-        "./assets/style.css",
-        repoPrefix + "style.css",
-        repoPrefix + "assets/style.css",
-      ];
 
       function tryNext() {
         if (!candidates.length) {
@@ -67,26 +65,11 @@
         inject(href);
       }
 
-      function probePrimary() {
-        if (tried) return;
-        tried = true;
-        setTimeout(() => {
-          const ok = Array.from(document.styleSheets || []).some((ss) =>
-            (ss.href || "").includes("style.css")
-          );
-          if (!ok) tryNext();
-        }, 600);
-      }
-
-      if (link) {
-        link.addEventListener("error", tryNext, { once: true });
-        probePrimary();
-      } else {
-        tryNext();
-      }
+      // Start direkt mit dem ersten Kandidaten (kein initiales <link>, also keine 404s upfront)
+      tryNext();
     })();
   </script>
-  <!-- ===== Ende Stylesheet-Loader ===== -->
+  <!-- ===== Ende CSS Loader ===== -->
 </head>
 
 <body>
@@ -112,13 +95,13 @@
   <!-- Deine App -->
   <script type="text/babel" src="./app.js"></script>
 
-  <!-- Mount-Fallback (optional, falls nicht in app.js gerendert) -->
+  <!-- Optionaler Mount-Fallback -->
   <script type="text/babel">
     if (!document.getElementById("___appMounted")) {
       const rootEl = document.getElementById("app");
       if (rootEl && window.React && window.ReactDOM) {
         const root = ReactDOM.createRoot(rootEl);
-        // root.render(<App />); // aktivieren, falls app.js kein eigenes Rendering enthält
+        // root.render(<App />);
       }
     }
   </script>
