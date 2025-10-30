@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>avus smart-cap Dashboard</title>
 
-  <!-- Favicon (verhindert 404) -->
+  <!-- Favicon, verhindert 404 -->
   <link
     rel="icon"
     href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23003360'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='42' fill='white'%3EA%3C/text%3E%3C/svg%3E"
@@ -21,60 +21,38 @@
           if (s.indexOf("in-browser Babel transformer") !== -1) return;
           return _warn.apply(console, arguments);
         };
-      } catch (e) {}
+      } catch(e){}
     })();
   </script>
 
-  <!-- ===== CSS Loader (ohne initiales <link>, dadurch keine 404-Spam) ===== -->
+  <!-- ===== CSS Loader: exakt 1 URL (kein 404-Spam) ===== -->
   <script>
     (function () {
-      // Kandidaten – zuerst die URL, die laut deinem Log funktioniert
-      const origin = location.origin;
-      const repoPrefix = (function () {
-        const parts = location.pathname.split("/").filter(Boolean);
-        return parts.length > 1 ? ("/" + parts[0] + "/") : "/";
-      })();
-
-      const candidates = [
-        origin + "/style.css",              // ✅ User/Org-Pages Root (funktionierte bei dir)
-        "./style.css",                      // gleiches Verzeichnis wie index.html
-        "style.css",                        // relative Fallback
-        "./assets/style.css",               // assets/
-        origin + repoPrefix + "style.css",  // Project Pages unter /repo/style.css
-        origin + repoPrefix + "assets/style.css",
-      ];
-
-      function inject(href) {
-        const l = document.createElement("link");
-        l.rel = "stylesheet";
-        l.href = href + (href.indexOf("?") === -1 ? "?v=" + Date.now() : "");
-        l.onload = () => console.log("[css] loaded:", l.href);
-        l.onerror = () => {
-          // still & silent: kein extra console.error, wir probieren nur den nächsten
-          tryNext();
-        };
-        document.head.appendChild(l);
-      }
-
-      function tryNext() {
-        if (!candidates.length) {
-          console.warn("[css] no stylesheet found");
-          return;
-        }
-        const href = candidates.shift();
-        inject(href);
-      }
-
-      // Start direkt mit dem ersten Kandidaten (kein initiales <link>, also keine 404s upfront)
-      tryNext();
+      // Falls deine style.css unter /test/style.css liegt, ändere die nächste Zeile darauf!
+      const href = location.origin + "/style.css"; // <- ggf. auf location.origin + "/test/style.css" ändern
+      const l = document.createElement("link");
+      l.rel = "stylesheet";
+      l.href = href + "?v=" + Date.now();
+      l.onload = () => console.log("[css] loaded:", l.href);
+      l.onerror = () => console.error("[css] failed:", l.href);
+      document.head.appendChild(l);
     })();
   </script>
-  <!-- ===== Ende CSS Loader ===== -->
 </head>
 
 <body>
   <noscript>Bitte JavaScript aktivieren.</noscript>
   <div id="app"></div>
+
+  <!-- Globaler Error-Logger, damit „weißer Screen“ nicht stumm bleibt -->
+  <script>
+    window.addEventListener("error", e => {
+      console.error("[window.onerror]", e.message, e.filename + ":" + e.lineno + ":" + e.colno);
+    });
+    window.addEventListener("unhandledrejection", e => {
+      console.error("[unhandledrejection]", e.reason);
+    });
+  </script>
 
   <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -86,24 +64,36 @@
     try {
       pdfjsLib.GlobalWorkerOptions.workerSrc =
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    } catch (e) {}
+    } catch(e){}
   </script>
 
-  <!-- Babel (nur nötig, wenn app.js JSX enthält) -->
+  <!-- Babel-Standalone (für JSX in externem app.js) -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- Deine App -->
-  <script type="text/babel" src="./app.js"></script>
+  <!-- WICHTIG: data-presets="react" damit JSX in app.js kompiliert wird -->
+  <script
+    type="text/babel"
+    data-presets="react"
+    src="./app.js">
+  </script>
 
-  <!-- Optionaler Mount-Fallback -->
-  <script type="text/babel">
-    if (!document.getElementById("___appMounted")) {
+  <!-- Mount-Fallback: rendert App(), wenn vorhanden – sonst klare Fehlermeldung -->
+  <script type="text/babel" data-presets="react">
+    (function mount() {
       const rootEl = document.getElementById("app");
-      if (rootEl && window.React && window.ReactDOM) {
+      if (!rootEl || !window.React || !window.ReactDOM) return;
+
+      if (typeof window.App === "function") {
         const root = ReactDOM.createRoot(rootEl);
-        // root.render(<App />);
+        root.render(<App />);
+        console.log("[mount] App() gerendert.");
+      } else if (typeof window.renderApp === "function") {
+        window.renderApp();
+        console.log("[mount] renderApp() aufgerufen.");
+      } else {
+        console.error("[mount] Keine App gefunden. Definiere entweder global window.App oder window.renderApp in app.js.");
       }
-    }
+    })();
   </script>
 </body>
 </html>
