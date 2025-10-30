@@ -431,7 +431,7 @@ setContacts(prev => prev.map(r => ((r.id || r.email) === key ? { ...r, active: n
 setUpdates(prev => ({ ...prev, [key]: { active: newActive } }));
 };
 
-// ★ FIX: TRUE/FALSE-String schicken – strTF() / toTF verwenden, nicht asBoolTF
+// ★ TRUE/FALSE-String schicken – toTF verwenden
 const saveActive = async () => {
 const payload = Object.entries(updates).map(([k, v]) => ({
 id:    k.includes("@") ? undefined : k,
@@ -724,6 +724,7 @@ const fields = [
 { key: "{{company}}", label: "Firma" },
 { key: "{{position}}", label: "Position" },
 { key: "{{sp_first_name}} {{sp_last_name}}", label: "Absender-Name" },
+{ key: "{{sp_name}}", label: "Absender (voll)" },
 ];
 
 const insertAtCursor = (token) => {
@@ -1435,6 +1436,7 @@ setInfo("Bitte CSV oder PDF verwenden");
   // Pflichtfelder + Telefonregel
   const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
   const phoneOk    = (r) => !!(r.phone || r.mobile);
+
   // ----------- Upload: Plain POST + Batching (kein JSONP) -----------
   async function postPlain(url, body) {
     const res = await fetch(url, {
@@ -1463,79 +1465,61 @@ setInfo("Bitte CSV oder PDF verwenden");
 const upload = async () => {
 if (!rows.length) return alert("Keine gültigen Zeilen");
 
-    // Globale Blacklist/Bounces
-    // Globale Blacklist/Bounces (Plain-POST statt JSONP)
-let g = { blacklist: [], bounces: [] };
-    try { g = await httpGet(API.global.blacklist("", true)); } catch (e) {}
-    try { g = await postPlain(API.global.blacklist("", true), {}); } catch (e) {}
+  // Globale Blacklist/Bounces (via httpGet; kein doppelter Call)
+  let g = { blacklist: [], bounces: [] };
+  try { g = await httpGet(API.global.blacklist("", true)); } catch (e) { /* ignore */ }
 
-    // Validierungsregeln
-    const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
-    const phoneOk    = (r) => !!(r.phone || r.mobile);
+  const errors = [];
+  const valid  = [];
 
-const errors = [];
-const valid  = [];
+  for (const r of rows) {
+    let reason = "";
+    if (!requiredOk(r))                              reason = "MISSING_REQUIRED";
+    else if (!phoneOk(r))                            reason = "MISSING_PHONE_OR_MOBILE";
+    else if ((g.blacklist||[]).includes(r.email))    reason = "BLACKLIST";
+    else if ((g.bounces||[]).includes(r.email))      reason = "BOUNCE";
 
-for (const r of rows) {
-let reason = "";
-      if (!requiredOk(r))                              reason = "MISSING_REQUIRED";
-      else if (!phoneOk(r))                            reason = "MISSING_PHONE_OR_MOBILE";
-      else if ((g.blacklist||[]).includes(r.email))    reason = "BLACKLIST";
-      else if ((g.bounces||[]).includes(r.email))      reason = "BOUNCE";
-      if (!requiredOk(r))                               reason = "MISSING_REQUIRED";
-      else if (!phoneOk(r))                             reason = "MISSING_PHONE_OR_MOBILE";
-      else if ((g.blacklist||[]).includes(r.email))     reason = "BLACKLIST";
-      else if ((g.bounces||[]).includes(r.email))       reason = "BOUNCE";
+    if (reason) {
+      errors.push({
+        email: r.email || "",
+        Anrede: r.Anrede || "",
+        firstName: r.firstName || "",
+        lastName: r.lastName || "",
+        company: r.company || "",
+        phone: r.phone || "",
+        mobile: r.mobile || "",
+        reason
+      });
+    } else {
+      valid.push(r);
+    }
+  }
 
-if (reason) {
-errors.push({
-email: r.email || "",
-Anrede: r.Anrede || "",
-firstName: r.firstName || "",
-lastName: r.lastName || "",
-company: r.company || "",
-phone: r.phone || "",
-mobile: r.mobile || "",
-reason
-});
-} else {
-valid.push(r);
-}
-}
+  try {
+    // 1) Fehler in die globale Fehlerliste (gebatcht)
+    if (errors.length) {
+      await postInBatches(API.global.errorsAdd(), errors, 300);
+    }
 
-try {
-      // 1) Fehler in die globale Fehlerliste (gebatcht)
-if (errors.length) {
-        const resErr = await httpPost(API.global.errorsAdd(), { rows: errors });
-        ensureOk(resErr, 'Fehlerliste anlegen');
-        await postInBatches(API.global.errorsAdd(), errors, 300);
-}
-
-      // 2) Gültige Kontakte ins lokale Upload-Tab (gebatcht)
-if (valid.length) {
-        const resUp = await httpPost(API.upload(), { rows: valid, mode });
-        ensureOk(resUp, 'Upload');
-        alert(`Upload gesendet. OK: ${valid.length}${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
-        const r = await postInBatches(API.upload(), valid, 250);
-        alert(`Upload OK: ${r.inserted} (in ${r.batches} Batch(es))${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
-} else {
-alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste kopiert.`);
-}
-// rows unverändert lassen (Vorschau bleibt)
-} catch (e) {
-      console.error(e);
-alert(e.message || "Fehler beim Upload");
-}
+    // 2) Gültige Kontakte ins lokale Upload-Tab (gebatcht)
+    if (valid.length) {
+      const r = await postInBatches(API.upload(), valid, 250);
+      alert(`Upload OK: ${r.inserted} (in ${r.batches} Batch(es))${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
+    } else {
+      alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste kopiert.`);
+    }
+  } catch (e) {
+    console.error(e);
+    alert(e.message || "Fehler beim Upload");
+  }
 };
 
 const prepare = async () => {
 try {
-      const res = await httpPost(API.prepareCampaign(), {});
-      ensureOk(res, 'Vorbereitung');
-      await postPlain(API.prepareCampaign(), {});
-alert("Vorbereitung ausgelöst");
+  await httpPost(API.prepareCampaign(), {});
+  alert("Vorbereitung ausgelöst");
 } catch (e) {
-alert(e.message || "Fehler bei Vorbereitung");
+  alert(e.message || "Fehler bei Vorbereitung");
 }
 };
 
@@ -1613,6 +1597,3 @@ console.error('Mount error:', e);
 }
 })();
 /* ==== END PART 6 ==== */
-
-
-
