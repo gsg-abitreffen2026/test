@@ -1,6 +1,7 @@
-/* ===== avus smart-cap Dashboard – Core, API, Helpers, UI Primitives (PART 1) ===== */
+/* ==== PART 1 ==== */
+/* ===== avus smart-cap Dashboard – Core, API, Helpers, UI Primitives ===== */
 
-/** React aliases (optional) */
+/** React aliases */
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
 /** =====================
@@ -18,18 +19,20 @@ const API = {
   templates: () => `${API_BASE}?path=api/templates`,
   saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
   setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`, // (Server: optional / fallback)
+  templatesActive: () => `${API_BASE}?path=api/templates/active`,
 
-  signatures: () => `${API_BASE}?path=api/signatures`,
-  saveSignature: () => `${API_BASE}?path=api/signatures/save`,
-  setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
-  signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`, // (Server: optional / fallback)
+  // Signatures (lokal)
+  signaturesLocal: () => `${API_BASE}?path=api/signatures`,
+  signaturesLocalSave: () => `${API_BASE}?path=api/signatures/save`,
+  signatureStandard: () => `${API_BASE}?path=api/signatures/standard`,
+  signatureSaveActive: () => `${API_BASE}?path=api/signatures/active`,
+  signaturesActive: () => `${API_BASE}?path=api/signatures/active`,
+  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
 
   blacklistLocal: (q, includeBounces) =>
     `${API_BASE}?path=api/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
 
-  toggleActive: () => `${API_BASE}?path=api/contacts/active`,
+  setActive: () => `${API_BASE}?path=api/contacts/active`,
   setTodo: () => `${API_BASE}?path=api/contacts/todo`,
   removeContact: () => `${API_BASE}?path=api/contacts/remove`,
 
@@ -43,12 +46,10 @@ const API = {
     templates: () => `${API_BASE}?path=api/global/templates`,
     saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/" + sequenceId)}`,
     setActiveTemplate: () => `${API_BASE}?path=api/global/templates/active`,
-    deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/global/templates/delete/" + sequenceId)}`, // (Server: optional / fallback)
 
     signatures: () => `${API_BASE}?path=api/global/signatures`,
-    saveSignature: () => `${API_BASE}?path=api/global/signatures/save`,
-    setActiveSignature: () => `${API_BASE}?path=api/global/signatures/active`,
-    deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/global/signatures/delete/" + name)}`, // (Server: optional / fallback)
+    signatureSave: () => `${API_BASE}?path=api/global/signatures/save`,
+    signatureSetActive: () => `${API_BASE}?path=api/global/signatures/active`,
 
     blacklist: (q, includeBounces) => `${API_BASE}?path=api/global/blacklist&q=${encodeURIComponent(q || "")}&bounces=${includeBounces ? 1 : 0}`,
     addBlacklist: () => `${API_BASE}?path=api/global/blacklist`,
@@ -56,57 +57,76 @@ const API = {
     errorsList: () => `${API_BASE}?path=api/global/error_list`,
     errorsAdd: () => `${API_BASE}?path=api/global/error_list/add`,
     errorsDelete: () => `${API_BASE}?path=api/global/error_list/delete`,
-    errorsVisible: () => `${API_BASE}?path=api/global/error_list/visible`,
+    errorsHide: () => `${API_BASE}?path=api/global/error_list/hide`, // Soft-Delete (visible=FALSE)
   },
 };
 
-/* --- HTTP-Layer: JSONP (umgeht CORS) + Method-Override für "POST" --- */
-function jsonp(url) {
-  return new Promise((resolve, reject) => {
-    const cb = "__cb" + Math.random().toString(36).slice(2);
-    const sep = url.includes("?") ? "&" : "?";
-    const src = `${url}${sep}callback=${cb}`;
-    const s = document.createElement("script");
-    let done = false;
+/* --- HTTP-Layer (POST-only Reads, kein Preflight, Retry/Backoff) --- */
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    window[cb] = (data) => {
-      if (done) return;
-      done = true;
-      try { resolve(data); } finally {
-        delete window[cb];
-        s.remove();
+async function fetchWithRetry(url, options = {}, tries = 5) {
+  let lastErr;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.status === 429 || res.status === 503) {
+        const wait = 250 * Math.pow(2, i) + Math.floor(Math.random() * 200);
+        await sleep(wait);
+        continue;
       }
-    };
-    s.onerror = () => {
-      if (done) return;
-      done = true;
-      delete window[cb];
-      s.remove();
-      reject(new Error("JSONP network error"));
-    };
-    s.src = src;
-    document.head.appendChild(s);
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 200)}`);
+      }
+      const txt = await res.text();
+      try { return JSON.parse(txt); } catch { return { text: txt }; }
+    } catch (err) {
+      lastErr = err;
+      await sleep(200 * (i + 1));
+    }
+  }
+  throw lastErr || new Error(`Request failed: ${url}`);
+}
+
+// Reads → POST ohne Body, damit kein CORS-Preflight entsteht
+async function httpGet(url) {
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: "",
+  });
+}
+async function httpPost(url, body) {
+  return fetchWithRetry(url, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(body || {}),
   });
 }
 
-// Reads → GET via JSONP
-async function httpGet(url) {
-  return jsonp(url);
-}
+// Plain-POST (Alias, semantisch getrennt)
+const postPlain = (url, body) => httpPost(url, body);
 
-// Writes → "POST" via Method-Override + JSONP
-async function httpPost(url, body) {
-  const payload = encodeURIComponent(JSON.stringify(body || {}));
-  const sep = url.includes("?") ? "&" : "?";
-  const urlWith = `${url}${sep}method=POST&body=${payload}`;
-  return jsonp(urlWith);
+// In Batches posten (z. B. große Uploads/Fixes)
+async function postInBatches(url, rows, batchSize = 300) {
+  const arr = Array.isArray(rows) ? rows : [];
+  let inserted = 0;
+  for (let i = 0; i < arr.length; i += batchSize) {
+    const chunk = arr.slice(i, i + batchSize);
+    const r = await httpPost(url, { rows: chunk });
+    if (r && typeof r.inserted === "number") inserted += r.inserted;
+    else inserted += chunk.length;
+    // kleine Pause gegen Quotas
+    await sleep(120);
+  }
+  return { inserted };
 }
 
 /** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
 function isEmail(x) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x || ""); }
-function asBoolTF(v){ return String(v).toUpperCase() === "TRUE"; }
-const toTF = asBoolTF; // Alias, falls irgendwo noch benutzt
+function asBoolTF(v){ return String(v).toUpperCase() === "TRUE" || v === true; }
+const toTF = (b) => (b ? "TRUE" : "FALSE");
 function fmtDate(d){ if(!d) return ""; const dt=new Date(d); return isNaN(dt)?String(d):dt.toLocaleString(); }
 // Steps-Helfer (max 5)
 const clampSteps = (n) => Math.max(1, Math.min(5, Math.round(Number(n) || 1)));
@@ -237,9 +257,44 @@ async function parsePDF(file) {
   return rows;
 }
 
-/** ============ UI helpers (müssen vor Nutzung definiert sein) ============ */
+// Aliases für Part 6
+const parseCsvContacts = (text) => {
+  // Minimaler Parser für CSV-String (für File.text() hatten wir oben parseCSV(file))
+  // Hier nutzen wir denselben Logikpfad wie parseCSV, nur für bereits vorliegenden Text:
+  const fakeFile = { text: async () => text };
+  return parseCSV(fakeFile);
+};
+const parsePdfContacts = async (uint8) => {
+  // pdfjs braucht ArrayBuffer; hier bauen wir ein Blob-File-ähnliches Objekt:
+  const blob = new Blob([uint8], { type: "application/pdf" });
+  const fileLike = { arrayBuffer: async () => blob.arrayBuffer() };
+  return parsePDF(fileLike);
+};
+
+/** ============ UI helpers / primitives ============ */
 function PillToggle({ on, onLabel = "On", offLabel = "Off", onClick }) {
   return <button className={cn("pill", on ? "pill-on" : "pill-off")} onClick={onClick}>{on ? onLabel : offLabel}</button>;
+}
+function Switch({ checked, onChange, labelOn = "On", labelOff = "Off" }) {
+  return (
+    <button
+      className={cn("pill", checked ? "pill-on" : "pill-off")}
+      onClick={() => onChange(!checked)}
+      type="button"
+      aria-pressed={!!checked}
+      title={checked ? labelOn : labelOff}
+    >
+      {checked ? labelOn : labelOff}
+    </button>
+  );
+}
+function KpiCard({ label, value }) {
+  return (
+    <section className="card kpi">
+      <div className="kpi-num">{value}</div>
+      <div className="muted">{label}</div>
+    </section>
+  );
 }
 function Toolbar({ children }) { return <div className="toolbar">{children}</div>; }
 function Section({ title, right, children, className }) {
@@ -253,10 +308,16 @@ function Section({ title, right, children, className }) {
     </section>
   );
 }
-function Field({ label, children }) { return (<label className="field"><span>{label}</span>{children}</label>); }
+function Field({ label, children, inline }) {
+  return (
+    <label className={cn("field", inline && "row vcenter gap")}>
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
 function TextButton({ children, onClick, disabled }) { return (<button className="btn" onClick={onClick} disabled={disabled}>{children}</button>); }
 function PrimaryButton({ children, onClick, disabled }) { return (<button className="btn primary" onClick={onClick} disabled={disabled}>{children}</button>); }
-
 /* ==== END PART 1 ==== */
 
 
@@ -276,10 +337,6 @@ function PrimaryButton({ children, onClick, disabled }) { return (<button classN
 
 
 
-                                                         
-
-
-
 
                                                          
 
@@ -287,104 +344,15 @@ function PrimaryButton({ children, onClick, disabled }) { return (<button classN
 
 
                                                          
-/* ==== PART 2 ==== */
-/** ============ APP ============ */
-function App() {
-  const [page, setPage] = React.useState("login");
-  const [authed, setAuthed] = React.useState(false);
-  const [user, setUser] = React.useState("Maxi");
-  const [pw, setPw] = React.useState("");
-  const [err, setErr] = React.useState("");
 
-  const doLogin = React.useCallback((e) => {
-    e && e.preventDefault();
-    const ok = (user === "Maxi" || user === "Thorsten") && pw === "avus";
-    if (ok) { setAuthed(true); setPage("dashboard"); setErr(""); }
-    else setErr("Login fehlgeschlagen");
-  }, [user, pw]);
 
-  const doLogout = React.useCallback(() => {
-    setAuthed(false); setPage("login"); setPw("");
-  }, []);
 
-  return (
-    <div className="app">
-      <Header authed={authed} onNav={setPage} onLogout={doLogout} active={page} />
-      <main className="container">
-        {!authed && page === "login" && (
-          <Login user={user} setUser={setUser} pw={pw} setPw={setPw} onSubmit={doLogin} err={err} />
-        )}
-        {authed && page === "dashboard" && <Dashboard />}
-        {authed && page === "templates" && <Templates />}
-        {authed && page === "signaturen" && <Signaturen />}
-        {authed && page === "blacklist" && <Blacklist />}
-        {authed && page === "errors" && <ErrorList />}
-        {authed && page === "kontakte" && <Kontakte />}
-      </main>
-    </div>
-  );
-}
 
-function Header({ authed, onNav, onLogout, active }) {
-  const tabs = [
-    { key: "dashboard", label: "Dashboard" },
-    { key: "templates", label: "Templates" },
-    { key: "signaturen", label: "Signaturen" },
-    { key: "blacklist", label: "Blacklist" },
-    { key: "errors", label: "Fehlerliste" },
-    { key: "kontakte", label: "Kontakte" },
-  ];
-  return (
-    <header className="topbar">
-      <div className="brand">
-        <div className="logo">av</div>
-        <div>
-          <div className="brand-top">avus gastro</div>
-          <div className="brand-bottom">smart-cap Dashboard</div>
-        </div>
-      </div>
-      {authed ? (
-        <nav className="menu">
-          {tabs.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => onNav(t.key)}
-              className={cn("menu-btn", active === t.key && "active")}
-            >
-              {t.label}
-            </button>
-          ))}
-          <button onClick={onLogout} className="menu-btn">Logout</button>
-        </nav>
-      ) : (
-        <div className="tag">pay easy — Bezahlen im Flow</div>
-      )}
-    </header>
-  );
-}
+                                                         
+/* =========================
+ * Part 2 — Dashboard
+ * ========================= */
 
-function Login({ user, setUser, pw, setPw, onSubmit, err }) {
-  return (
-    <section className="card narrow">
-      <h2>Login</h2>
-      <form onSubmit={onSubmit} className="grid gap">
-        <Field label="Nutzer">
-          <select value={user} onChange={(e) => setUser(e.target.value)}>
-            <option>Maxi</option>
-            <option>Thorsten</option>
-          </select>
-        </Field>
-        <Field label="Passwort">
-          <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="avus" />
-        </Field>
-        {err && <div className="error">{err}</div>}
-        <PrimaryButton>Einloggen</PrimaryButton>
-      </form>
-    </section>
-  );
-}
-
-/** ============ DASHBOARD ============ */
 function Dashboard() {
   const [stats, setStats] = React.useState({ sent: 0, replies: 0, hot: 0, needReview: 0, meetings: 0 });
   const [contacts, setContacts] = React.useState([]);
@@ -393,22 +361,31 @@ function Dashboard() {
   const [error, setError] = React.useState("");
   const [perDay, setPerDay] = React.useState(25);
   const [campaignRunning, setCampaignRunning] = React.useState(false);
-  const [updates, setUpdates] = React.useState({}); // id/email -> { active: boolean }
+  const [updates, setUpdates] = React.useState({});
   const [showInactive, setShowInactive] = React.useState(true);
   const [todoUpdates, setTodoUpdates] = React.useState({});
+
+  // NEW: aktive Signatur/Template-Anzeigen
+  const [activeSig, setActiveSig] = React.useState({ scope: "", name: "" });
+  const [activeTpl, setActiveTpl] = React.useState({ local: "", global: "" });
 
   const loadAll = React.useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const [s, c] = await Promise.all([
+      const [s, c, sigA, tplA] = await Promise.all([
         httpGet(API.stats()),
-        httpGet(API.contacts(limit, showInactive))
+        httpGet(API.contacts(limit, showInactive)),
+        httpGet(API.signaturesActive()),
+        httpGet(API.templatesActive()),
       ]);
       setStats(s);
+
       const arr = Array.isArray(c.contacts) ? c.contacts : [];
-      // Sheets → boolean
       const norm = arr.map(r => ({ ...r, active: asBoolTF(r.active) }));
       setContacts(norm);
+
+      setActiveSig({ scope: sigA.scope || "", name: sigA.name || "" });
+      setActiveTpl({ local: tplA.local || "", global: tplA.global || "" });
     } catch (e) {
       setError(e.message || "Fehler beim Laden");
     } finally {
@@ -418,53 +395,52 @@ function Dashboard() {
 
   React.useEffect(() => { loadAll(); }, [loadAll]);
 
-  const start = async () => { setCampaignRunning(true); try { await httpPost(API.startCampaign(), {}); } catch (e) { setError(e.message); } };
-  const stop  = async () => { setCampaignRunning(false); try { await httpPost(API.stopCampaign(),  {}); } catch (e) { setError(e.message); } };
-
-  const toggleActive = (row) => {
-    const key = (row.id || row.email || "").toString();
-    const newActive = !row.active;
-    setContacts(prev => prev.map(r => ((r.id || r.email) === key ? { ...r, active: newActive } : r)));
-    setUpdates(prev => ({ ...prev, [key]: { active: newActive } }));
+  const toggleActive = (email, next) => {
+    setUpdates(prev => ({ ...prev, [email]: { ...(prev[email] || {}), active: next } }));
+    setContacts(prev => prev.map(r => r.email === email ? { ...r, active: next } : r));
+  };
+  const toggleTodo = (email, next) => {
+    setTodoUpdates(prev => ({ ...prev, [email]: { ...(prev[email] || {}), todo: next } }));
+    setContacts(prev => prev.map(r => r.email === email ? { ...r, todo: next } : r));
   };
 
-  // ★ FIX: TRUE/FALSE-String schicken – strTF() / toTF verwenden, nicht asBoolTF
   const saveActive = async () => {
-    const payload = Object.entries(updates).map(([k, v]) => ({
-      id:    k.includes("@") ? undefined : k,
-      email: k.includes("@") ? k : undefined,
-      active: toTF(!!v.active) // -> "TRUE"/"FALSE"
-    }));
+    const payload = Object.entries(updates).map(([email, u]) => ({ email, active: !!u.active }));
     if (!payload.length) return;
     try {
-      const res = await httpPost(API.toggleActive(), { updates: payload });
-      ensureOk(res, 'Active speichern');
+      await httpPost(API.setActive(), { updates: payload });
       setUpdates({});
-      alert("Änderungen gespeichert");
-      await loadAll();
+      alert("Aktiv-Status gespeichert");
     } catch (e) {
-      setError(e.message || "Speichern fehlgeschlagen");
+      alert(e.message || "Fehler beim Speichern");
     }
   };
 
-  const markTodoDone = async (row) => {
-    const key = (row.id || row.email || "").toString();
-    setContacts(prev => prev.map(r => ((r.id || r.email) === key ? { ...r, todo: false } : r)));
-    setTodoUpdates(prev => ({ ...prev, [key]: { todo: false } }));
-  };
-
   const saveTodos = async () => {
-    const payload = Object.entries(todoUpdates).map(([k, v]) => ({
-      id:    k.includes("@") ? undefined : k,
-      email: k.includes("@") ? k : undefined,
-      todo:  v.todo
-    }));
+    const payload = Object.entries(todoUpdates).map(([email, u]) => ({ email, todo: !!u.todo }));
     if (!payload.length) return;
     try {
-      const res = await httpPost(API.setTodo(), { updates: payload });
-      ensureOk(res, 'ToDos speichern');
+      await httpPost(API.setTodo(), { updates: payload });
       setTodoUpdates({});
-    } catch (e) { setError(e.message || "Fehler beim Speichern der ToDos"); }
+      alert("To-Dos gespeichert");
+    } catch (e) {
+      alert(e.message || "Fehler beim Speichern");
+    }
+  };
+
+  const start = async () => {
+    setCampaignRunning(true);
+    try {
+      await httpPost(API.startCampaign(), {});
+      alert('Kampagne gestartet: status="go" für alle Leads gesetzt.');
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+  const stop  = async () => {
+    setCampaignRunning(false);
+    try { await httpPost(API.stopCampaign(), {}); }
+    catch (e) { setError(e.message); }
   };
 
   const finishedTodos = React.useMemo(
@@ -479,103 +455,99 @@ function Dashboard() {
     <section className="grid gap">
       {error && <div className="error">{error}</div>}
 
-      {/* To-Dos & Kampagneneinstellungen */}
       <div className="grid cols-2 gap">
         <Section title="To-Dos (angeschrieben)">
-          <ul className="list">
+          <div className="list">
             {finishedTodos.map((r) => (
-              <li key={r.id || r.email} className="row between vcenter">
-                <div className="grow">
-                  <div className="strong">{[r.firstName, r.lastName].filter(Boolean).join(" ")}</div>
-                  <div className="muted">{r.company} · {r.last_sent_at || r.lastMailAt}</div>
-                </div>
-                <TextButton onClick={() => markTodoDone(r)}>Erledigt</TextButton>
-              </li>
+              <div key={r.email} className="row between vcenter">
+                <div>{r.firstName} {r.lastName} · {r.company}</div>
+                <Switch
+                  checked={asBoolTF(r.todo)}
+                  onChange={(v) => toggleTodo(r.email, v)}
+                  labelOn="TODO"
+                  labelOff="—"
+                />
+              </div>
             ))}
-          </ul>
+          </div>
           <div className="row end">
             <PrimaryButton onClick={saveTodos} disabled={!Object.keys(todoUpdates).length}>Änderungen speichern</PrimaryButton>
           </div>
         </Section>
 
-        <Section title="Kampagneneinstellungen">
+        <Section title="Kampagneneinstellungen"
+          right={<TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>}
+        >
           <div className="grid gap">
-            <Field label="Sendouts pro Tag">
-              <input type="number" min="0" value={perDay} onChange={(e) => setPerDay(Number(e.target.value || 0))} />
-            </Field>
-            <div className="row gap">
-              <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
-              <TextButton onClick={stop} disabled={!campaignRunning}>Stoppen</TextButton>
-              <TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>
+            <div className="row gap wrap">
+              <Field label="Sendouts pro Tag">
+                <input type="number" min="0" value={perDay} onChange={(e) => setPerDay(Number(e.target.value || 0))} />
+              </Field>
+              <div className="row gap">
+                <PrimaryButton onClick={start} disabled={campaignRunning}>Kampagne starten</PrimaryButton>
+                <TextButton onClick={stop} disabled={!campaignRunning}>Stoppen</TextButton>
+                <TextButton onClick={async ()=>{
+                  try { await httpPost(API.prepareCampaign(), {}); alert("Vorbereitung ausgelöst"); }
+                  catch(e){ alert(e.message || "Fehler bei Vorbereitung"); }
+                }}>Vorbereiten</TextButton>
+              </div>
+            </div>
+
+            <div className="grid gap">
+              <div className="tag">Aktive Signatur: <strong>{activeSig.scope}/{activeSig.name || "—"}</strong></div>
+              <div className="tag">Aktives Template (lokal): <strong>{activeTpl.local || "—"}</strong></div>
+              <div className="tag">Aktives Template (global): <strong>{activeTpl.global || "—"}</strong></div>
             </div>
           </div>
         </Section>
       </div>
 
-      {/* KPIs */}
-      <div className="grid cols-3 gap">
-        <section className="card kpi"><div className="kpi-num">{stats.sent}</div><div className="muted">Gesendet</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.replies}</div><div className="muted">Antworten</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.hot}</div><div className="muted">HOT</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.needReview}</div><div className="muted">Need Review</div></section>
-        <section className="card kpi"><div className="kpi-num">{stats.meetings}</div><div className="muted">Meetings</div></section>
+      <div className="grid cols-2 gap">
+        <KpiCard label="Gesendet" value={stats.sent} />
+        <KpiCard label="Replies" value={stats.replies} />
+        <KpiCard label="HOT" value={stats.hot} />
+        <KpiCard label="Need Review" value={stats.needReview} />
       </div>
 
-      {/* Kontakte */}
       <Section
         title="Kontakte"
         right={
           <div className="row gap">
-            <label className="row gap">
-              <span>Anzahl</span>
-              <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}>
-                {[10,25,50,75,100,150,200].map((n) => (<option key={n} value={n}>{n}</option>))}
-              </select>
-            </label>
-            <label className="row gap">
-              <span>Deaktivierte zeigen</span>
-              <input type="checkbox" checked={showInactive} onChange={(e) => setShowInactive(e.target.checked)} />
-            </label>
-            <TextButton onClick={loadAll} disabled={loading}>Laden</TextButton>
+            <Field inline label="Limit">
+              <input type="number" min="1" value={limit} onChange={(e) => setLimit(Number(e.target.value || 1))}/>
+            </Field>
+            <Field inline label="Inaktive zeigen">
+              <Switch checked={showInactive} onChange={setShowInactive} />
+            </Field>
+            <TextButton onClick={loadAll} disabled={loading}>Neu laden</TextButton>
           </div>
         }
       >
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr><th>Name</th><th>Firma</th><th>E-Mail</th><th>Status</th><th>Active</th></tr>
-            </thead>
-            <tbody>
-              {contacts.map((r) => (
-                <tr key={r.id || r.email}>
-                  <td>{[r.firstName, r.lastName].filter(Boolean).join(" ")}</td>
-                  <td>{r.company}</td>
-                  <td>{r.email}</td>
-                  <td>{r.status || ""}</td>
-                  <td>
-                    <PillToggle
-                      on={!!r.active}
-                      onLabel="aktiv"
-                      offLabel="deaktiviert"
-                      onClick={() => toggleActive(r)}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="list">
+          {contacts.map((r) => (
+            <div key={`${r.email}-${r.id || ''}`} className={cn("row between vcenter", !asBoolTF(r.active) && "muted")}>
+              <div className="row gap">
+                <div className="strong">{r.firstName} {r.lastName}</div>
+                <div className="muted">· {r.company}</div>
+                <div className="muted">· {r.email}</div>
+              </div>
+              <Switch
+                checked={asBoolTF(r.active)}
+                onChange={(v) => toggleActive(r.email, v)}
+                labelOn="Aktiv"
+                labelOff="Inaktiv"
+              />
+            </div>
+          ))}
         </div>
-        <div className="row end gap">
-          <PrimaryButton onClick={saveActive} disabled={!Object.keys(updates).length}>
-            Änderungen speichern
-          </PrimaryButton>
+        <div className="row end">
+          <PrimaryButton onClick={saveActive} disabled={!Object.keys(updates).length}>Änderungen speichern</PrimaryButton>
         </div>
       </Section>
     </section>
   );
 }
 
-/* ==== END PART 2 ==== */
 
 
 
@@ -605,8 +577,10 @@ function Dashboard() {
 
 
 
-/* ==== PART 3 ==== */
-/** ============ TEMPLATES (local/global archive) ============ */
+/* =========================
+ * Part 3 — Templates
+ * ========================= */
+
 function Templates() {
   const [scope, setScope] = React.useState("local");
   const [localList, setLocalList] = React.useState([]);
@@ -617,23 +591,24 @@ function Templates() {
   const [cursorTarget, setCursorTarget] = React.useState(null);
   const [totalSteps, setTotalSteps] = React.useState(1);
 
+  // NEW: Anzeige aktive Templates
+  const [activeTpl, setActiveTpl] = React.useState({ local: "", global: "" });
+
   const load = React.useCallback(async () => {
     setLoading(true); setErr("");
     try {
-      const [loc, glob] = await Promise.all([
+      const [loc, glob, act] = await Promise.all([
         httpGet(API.templates()),
-        httpGet(API.global.templates())
+        httpGet(API.global.templates()),
+        httpGet(API.templatesActive()),  // { local, global }
       ]);
-      ensureOk(loc, 'Templates lokal laden');
-      ensureOk(glob, 'Templates global laden');
-
       const a = Array.isArray(loc) ? loc : [];
       const b = Array.isArray(glob) ? glob : [];
       setLocalList(a); setGlobalList(b);
+      setActiveTpl({ local: act.local || "", global: act.global || "" });
 
       const first = (scope === "local" ? a : b);
       setActiveName(first[0]?.name || "");
-
       const steps = first[0]?.steps || [];
       const tsRaw = typeof first[0]?.total_steps === "number" ? first[0].total_steps : steps.length || 1;
       setTotalSteps(clampSteps(tsRaw));
@@ -669,21 +644,36 @@ function Templates() {
     const payload = {
       sequence_id: activeName,
       total_steps: safeTotal,
-      steps: (tpl.steps || []).slice(0, safeTotal).map((s, i) => ({
-        step: s.step || String(i + 1),
+      steps: (tpl.steps || []).slice(0, safeTotal).map((s) => ({
+        step: s.step || "",
         subject: s.subject || "",
         body_html: s.body_html || "",
         delay_days: Number(s.delay_days || 0),
       })),
     };
     try {
-      let res;
-      if (scope === "local") res = await httpPost(API.saveTemplate(activeName), payload);
-      else                   res = await httpPost(API.global.saveTemplate(activeName), payload);
-      ensureOk(res, 'Template speichern');
+      if (scope === "local") await httpPost(API.saveTemplate(activeName), payload);
+      else await httpPost(API.global.saveTemplate(activeName), payload);
       alert("Template gespeichert");
     } catch (e) {
       alert(e.message || "Fehler");
+    }
+  };
+
+  // „Löschen“ durch Leeren der Sequenz (keine eigene Delete-Route erforderlich)
+  const removeTemplate = async () => {
+    if (!activeName) return;
+    if (!confirm(`Template "${activeName}" wirklich leeren?`)) return;
+    try {
+      const payload = { sequence_id: activeName, total_steps: 0, steps: [] };
+      if (scope === "local") await httpPost(API.saveTemplate(activeName), payload);
+      else await httpPost(API.global.saveTemplate(activeName), payload);
+      setListByScope(prev => prev.filter(t => t.name !== activeName));
+      const nextName = (scope === "local" ? localList : globalList).find(t => t.name !== activeName)?.name || "";
+      setActiveName(nextName);
+      alert("Template geleert");
+    } catch (e) {
+      alert(e.message || "Fehler beim Leeren");
     }
   };
 
@@ -695,33 +685,6 @@ function Templates() {
     setActiveName(nm);
     setTotalSteps(1);
   };
-
-  // Löschen (lokal/global)
-  const removeTemplate = async () => {
-    if (!activeName) return;
-    if (!confirm(`Template "${activeName}" wirklich löschen?`)) return;
-    try {
-      let res;
-      if (scope === "local") res = await httpPost(API.deleteTemplate(activeName), {});
-      else                   res = await httpPost(API.global.deleteTemplate(activeName), {});
-      ensureOk(res, 'Template löschen');
-
-      setListByScope(prev => prev.filter(t => t.name !== activeName));
-      const nextName = (scope === "local" ? localList : globalList).find(t => t.name !== activeName)?.name || "";
-      setActiveName(nextName);
-      alert("Template gelöscht");
-    } catch (e) {
-      alert(e.message || "Fehler beim Löschen");
-    }
-  };
-
-  const fields = [
-    { key: "{{firstName}}", label: "Vorname" },
-    { key: "{{lastName}}", label: "Nachname" },
-    { key: "{{company}}", label: "Firma" },
-    { key: "{{position}}", label: "Position" },
-    { key: "{{sp_first_name}} {{sp_last_name}}", label: "Absender-Name" },
-  ];
 
   const insertAtCursor = (token) => {
     const el = cursorTarget; if (!el) return;
@@ -740,11 +703,9 @@ function Templates() {
   const setUpdateSubjectRef = (el, updater) => { if (el) el._updateSubject = updater; };
   const setUpdateBodyRef = (el, updater) => { if (el) el._updateBody = updater; };
 
-  // Sichtbare Steps
   const visibleSteps = React.useMemo(() => {
     const arr = (tpl && Array.isArray(tpl.steps)) ? tpl.steps : [];
     const n = clampSteps(totalSteps);
-    // ggf. Steps auffüllen bis n
     if (arr.length < n) {
       const fill = [];
       for (let i = arr.length; i < n; i++) fill.push({ step: String(i+1), subject:"", body_html:"", delay_days:0 });
@@ -752,6 +713,25 @@ function Templates() {
     }
     return arr.slice(0, n);
   }, [tpl, totalSteps]);
+
+  const setActiveLocal = async () => {
+    if (!activeName) return;
+    try {
+      await httpPost(API.setActiveTemplate(), { scope: "local", name: activeName });
+      const act = await httpGet(API.templatesActive());
+      setActiveTpl({ local: act.local || "", global: act.global || "" });
+      alert(`Aktives Template (lokal): ${activeName}`);
+    } catch (e) { alert(e.message || "Fehler"); }
+  };
+  const setActiveGlobal = async () => {
+    if (!activeName) return;
+    try {
+      await httpPost(API.global.setActiveTemplate(), { name: activeName });
+      const act = await httpGet(API.templatesActive());
+      setActiveTpl({ local: act.local || "", global: act.global || "" });
+      alert(`Aktives Template (global): ${activeName}`);
+    } catch (e) { alert(e.message || "Fehler"); }
+  };
 
   return (
     <section className="grid gap">
@@ -773,7 +753,15 @@ function Templates() {
 
         <TextButton onClick={load} disabled={loading}>Neu laden</TextButton>
         <PrimaryButton onClick={createNew}>Neues Template</PrimaryButton>
-        <TextButton onClick={removeTemplate} disabled={!activeName}>Löschen</TextButton>
+        <TextButton onClick={removeTemplate} disabled={!activeName}>Leeren</TextButton>
+      </div>
+
+      {/* NEW: Anzeige aktive Templates */}
+      <div className="row gap wrap">
+        <div className="tag">Aktiv (lokal): <strong>{activeTpl.local || "—"}</strong></div>
+        <div className="tag">Aktiv (global): <strong>{activeTpl.global || "—"}</strong></div>
+        <TextButton onClick={setActiveLocal} disabled={!activeName}>Als aktiv setzen (lokal)</TextButton>
+        <TextButton onClick={setActiveGlobal} disabled={!activeName}>Als aktiv setzen (global)</TextButton>
       </div>
 
       {tpl ? (
@@ -781,21 +769,13 @@ function Templates() {
           <div className="card">
             <div className="row gap vcenter">
               <Field label="Total Steps">
-                {/* Nur 1–5 Buttons */}
                 <div className="row gap">
                   {[1,2,3,4,5].map(n => (
-                    <button
-                      key={n}
-                      onClick={() => setTotalSteps(n)}
-                      className={cn("btn", totalSteps===n && "primary")}
-                      type="button"
-                    >{n}</button>
+                    <button key={n} onClick={() => setTotalSteps(n)} className={cn("btn", totalSteps===n && "primary")} type="button">{n}</button>
                   ))}
                 </div>
               </Field>
-              <div className="muted" style={{ alignSelf: 'end' }}>
-                von {(tpl?.steps || []).length}
-              </div>
+              <div className="muted" style={{ alignSelf: 'end' }}>von {(tpl?.steps || []).length}</div>
             </div>
           </div>
 
@@ -805,7 +785,6 @@ function Templates() {
               return (
                 <div key={i} className="card">
                   <div className="strong">{`Step ${stepIndex}`}</div>
-
                   <Field label="Betreff">
                     <input
                       value={s.subject || ""}
@@ -815,7 +794,6 @@ function Templates() {
                       onChange={(e) => updateStep(i, { subject: e.target.value })}
                     />
                   </Field>
-
                   <Field label="Body (HTML)">
                     <textarea
                       rows="8"
@@ -826,21 +804,19 @@ function Templates() {
                       onChange={(e) => updateStep(i, { body_html: e.target.value })}
                     />
                   </Field>
-
                   <div className="row gap wrap">
-                    {fields.map((f) => (
-                      <TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>
-                        {f.label}
-                      </TextButton>
+                    {[
+                      { key: "{{firstName}}", label: "Vorname" },
+                      { key: "{{lastName}}", label: "Nachname" },
+                      { key: "{{company}}", label: "Firma" },
+                      { key: "{{position}}", label: "Position" },
+                      { key: "{{sp_first_name}} {{sp_last_name}}", label: "Absender-Name" },
+                    ].map((f) => (
+                      <TextButton key={f.key} onClick={() => insertAtCursor(f.key)}>{f.label}</TextButton>
                     ))}
                   </div>
-
                   <Field label="Verzögerung (Tage)">
-                    <input
-                      type="number"
-                      value={s.delay_days || 0}
-                      onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })}
-                    />
+                    <input type="number" value={s.delay_days || 0} onChange={(e) => updateStep(i, { delay_days: Number(e.target.value || 0) })}/>
                   </Field>
                 </div>
               );
@@ -856,7 +832,6 @@ function Templates() {
     </section>
   );
 }
-/* ==== END PART 3 ==== */
 
 
 
@@ -892,231 +867,137 @@ function Templates() {
 
 
 
-/* ==== PART 4 ==== */
-/** ============ SIGNATURES (local/global archive) ============ */
-function Signaturen() {
-  const [scope, setScope] = React.useState("local"); // local | global
-  const [local, setLocal] = React.useState({ list: [], standard: "" });
-  const [global, setGlobal] = React.useState({ list: [] });
-  const [active, setActive] = React.useState({ scope: "local", name: "standard" });
-  const [currentName, setCurrentName] = React.useState("standard");
-  const [html, setHtml] = React.useState("");
-  const [loading, setLoading] = React.useState(false);
-  const [err, setErr] = React.useState("");
-  const [creating, setCreating] = React.useState(false);
+/* =========================
+ * Part 4 — Signaturen
+ * ========================= */
 
-  const loadingRef = React.useRef(false);
-  const tokenRef = React.useRef(0);
+function Signatures() {
+  const [listLocal, setListLocal] = React.useState([]);       // optionaler lokaler Pool (Sheet "signatures")
+  const [stdHtml, setStdHtml]   = React.useState("");         // settings!A2 "Signatur"
+  const [active, setActive]     = React.useState({ scope: "local", name: "standard" });
+  const [globalList, setGlobal] = React.useState([]);         // globaler Pool (global sheet)
+
+  const [loading, setLoading]   = React.useState(false);
+  const [err, setErr]           = React.useState("");
 
   const load = React.useCallback(async () => {
-    if (loadingRef.current) return;
-    loadingRef.current = true;
-    const myToken = ++tokenRef.current;
-    setLoading(true);
-    setErr("");
+    setLoading(true); setErr("");
     try {
-      const locList = await httpGet(API.signatures());
-      const std = await httpGet(API.signaturesStandard()).catch(() => ({ html: "" }));
-      const globList = await httpGet(API.global.signatures());
-
-      ensureOk(locList, 'Signaturen lokal laden');
-      // std kann leer sein, nicht zwingend ensureOk
-      ensureOk(globList, 'Signaturen global laden');
-
-      if (myToken !== tokenRef.current) return;
-
-      const locArr = Array.isArray(locList?.list)
-        ? locList.list
-        : Array.isArray(locList)
-        ? locList
-        : [];
-      const stdHtml = std?.html || std?.Signatur || "";
-      const globArr = Array.isArray(globList?.list)
-        ? globList.list
-        : Array.isArray(globList)
-        ? globList
-        : [];
-
-      setLocal({ list: locArr, standard: stdHtml });
-      setGlobal({ list: globArr });
-
-      if (locList?.active) setActive(locList.active);
-
-      setCreating(false);
-      if (scope === "local") {
-        setCurrentName("standard");
-        setHtml(stdHtml);
-      } else {
-        const first = globArr[0]?.name || "";
-        setCurrentName(first);
-        setHtml(globArr.find((x) => x.name === first)?.html || "");
-      }
+      const [std, loc, act, glob] = await Promise.all([
+        httpGet(API.signatureStandard()),   // { html }
+        httpGet(API.signaturesLocal()),     // { list, active }
+        httpGet(API.signaturesActive()),    // { scope, name }
+        httpGet(API.global.signatures()),   // { list }
+      ]);
+      setStdHtml(std.html || "");
+      setListLocal(Array.isArray(loc.list) ? loc.list : []);
+      setActive({ scope: act.scope || "local", name: act.name || "standard" });
+      setGlobal(Array.isArray(glob.list) ? glob.list : []);
     } catch (e) {
       setErr(e.message || "Fehler");
     } finally {
-      if (myToken === tokenRef.current) {
-        setLoading(false);
-        loadingRef.current = false;
-      }
+      setLoading(false);
     }
-  }, [scope]);
+  }, []);
 
-  React.useEffect(() => {
-    load();
-  }, [load]);
+  React.useEffect(() => { load(); }, [load]);
 
-  const list =
-    scope === "local"
-      ? [{ name: "standard", html: local.standard, readonly: true }, ...(local.list || [])]
-      : global.list || [];
-
-  const onPick = (name) => {
-    setCreating(false);
-    setCurrentName(name);
-    const found = list.find((x) => x.name === name);
-    setHtml(found?.html || "");
-  };
-
-  const onSave = async () => {
-    if (scope === "local" && currentName === "standard")
-      return alert("Standard-Signatur ist unveränderlich.");
-    if (!currentName) return alert("Bitte Name vergeben.");
+  const saveStandard = async () => {
     try {
-      const body = { name: currentName, html };
-      const res = scope === "local" ? await httpPost(API.saveSignature(), body)
-                                    : await httpPost(API.global.saveSignature(), body);
-      ensureOk(res, 'Signatur speichern');
-      alert("Signatur gespeichert");
-      setCreating(false);
-      await load();
+      await httpPost(API.signatureSaveActive(), { scope: "local", name: "standard" }); // aktiv setzen
+      // in settings: „Signatur“-Feld wird getrennt im Backend verwaltet; hier nur aktiv setzen
+      alert("Standard-Signatur als aktiv gesetzt");
+      const act = await httpGet(API.signaturesActive());
+      setActive({ scope: act.scope || "local", name: act.name || "standard" });
     } catch (e) {
       alert(e.message || "Fehler beim Speichern");
     }
   };
 
-  const onCreate = () => {
-    setCreating(true);
-    setHtml("");
-    setCurrentName("");
+  const setActiveSig = async (scope, name) => {
+    try {
+      if (scope === "global") {
+        await httpPost(API.global.signatureSetActive(), { name });
+      } else {
+        await httpPost(API.signatureSaveActive(), { scope: "local", name });
+      }
+      const act = await httpGet(API.signaturesActive());
+      setActive({ scope: act.scope || "local", name: act.name || "standard" });
+      alert(`Aktive Signatur: ${scope}/${name}`);
+    } catch (e) { alert(e.message || "Fehler beim Setzen aktiv"); }
   };
 
-  const onSetActive = async () => {
+  const addLocal = async () => {
+    const name = prompt("Namen für lokale Signatur:");
+    if (!name) return;
+    const html = prompt("HTML für diese Signatur (leer = später einfügen):") || "";
     try {
-      const res = await httpPost(
-        scope === "local"
-          ? API.setActiveSignature()
-          : API.global.setActiveSignature(),
-        { scope, name: currentName }
-      );
-      ensureOk(res, 'Aktive Signatur setzen');
-      setActive({ scope, name: currentName });
-      alert("Aktive Signatur gesetzt");
-    } catch (e) {
-      alert(e.message || "Fehler");
-    }
-  };
-
-  // Signatur löschen
-  const onDelete = async () => {
-    if (!currentName) return;
-    if (scope === "local" && currentName === "standard")
-      return alert("Standard-Signatur kann nicht gelöscht werden.");
-    if (!confirm(`Signatur "${currentName}" wirklich löschen?`)) return;
-    try {
-      const res = scope === "local"
-        ? await httpPost(API.deleteSignature(currentName), {})
-        : await httpPost(API.global.deleteSignature(currentName), {});
-      ensureOk(res, 'Signatur löschen');
-      alert("Signatur gelöscht");
+      await httpPost(API.signaturesLocalSave(), { name, html });
       await load();
-    } catch (e) {
-      alert(e.message || "Fehler beim Löschen");
-    }
+      alert("Lokale Signatur gespeichert");
+    } catch (e) { alert(e.message || "Fehler beim Speichern"); }
+  };
+
+  const addGlobal = async () => {
+    const name = prompt("Namen für globale Signatur:");
+    if (!name) return;
+    const html = prompt("HTML für diese Signatur (leer = später einfügen):") || "";
+    try {
+      await httpPost(API.global.signatureSave(), { name, html });
+      await load();
+      alert("Globale Signatur gespeichert");
+    } catch (e) { alert(e.message || "Fehler beim Speichern"); }
   };
 
   return (
     <section className="grid gap">
       {err && <div className="error">{err}</div>}
 
-      <div className="row gap wrap">
-        <Field label="Archiv">
-          <select
-            value={scope}
-            onChange={(e) => {
-              const sc = e.target.value;
-              setScope(sc);
-              setCreating(false);
-              setCurrentName(
-                sc === "local" ? "standard" : global.list?.[0]?.name || ""
-              );
-            }}
-          >
-            <option value="local">Lokal</option>
-            <option value="global">Global</option>
-          </select>
-        </Field>
-
-        <Field label="Signatur">
-          <select
-            value={currentName}
-            onChange={(e) => onPick(e.target.value)}
-            disabled={creating}
-          >
-            {list.map((s) => (
-              <option key={s.name} value={s.name}>
-                {s.name}
-                {s.readonly ? " (Standard)" : ""}
-              </option>
-            ))}
-          </select>
-        </Field>
-
-        <TextButton onClick={load} disabled={loading}>
-          Neu laden
-        </TextButton>
-        <PrimaryButton onClick={onCreate}>Neue Signatur</PrimaryButton>
-        <TextButton onClick={onDelete} disabled={!currentName || (scope==="local" && currentName==="standard")}>
-          Löschen
-        </TextButton>
-      </div>
-
-      <div className="card">
-        {creating && (
-          <Field label="Name">
-            <input
-              placeholder="Name der Signatur"
-              value={currentName}
-              onChange={(e) => setCurrentName(e.target.value)}
-            />
-          </Field>
-        )}
-
+      <Section title="Standard (Settings)">
         <Field label="HTML">
-          <textarea
-            rows="8"
-            value={html}
-            onChange={(e) => setHtml(e.target.value)}
-            disabled={scope === "local" && currentName === "standard"}
-          />
+          <textarea rows="8" value={stdHtml} onChange={(e) => setStdHtml(e.target.value)} readOnly />
         </Field>
-
         <div className="row gap">
-          <PrimaryButton
-            onClick={onSave}
-            disabled={scope === "local" && currentName === "standard"}
-          >
-            Speichern
-          </PrimaryButton>
-          <TextButton onClick={onSetActive}>Als aktiv setzen</TextButton>
-          <div className="muted">
-            Aktiv: {active.scope}/{active.name}
-          </div>
+          <TextButton onClick={saveStandard}>Als aktiv setzen (Standard)</TextButton>
+          <div className="tag">Aktiv: <strong>{active.scope}/{active.name}</strong></div>
         </div>
+      </Section>
+
+      <div className="grid cols-2 gap">
+        <Section title="Lokale Signaturen">
+          <div className="list">
+            {listLocal.map(s => (
+              <div key={s.name} className="card">
+                <div className="row between vcenter">
+                  <div className="strong">{s.name}</div>
+                  <TextButton onClick={() => setActiveSig("local", s.name)}>Als aktiv setzen</TextButton>
+                </div>
+                <div className="sig-preview" dangerouslySetInnerHTML={{ __html: s.html || "" }} />
+              </div>
+            ))}
+          </div>
+          <TextButton onClick={addLocal}>Neue lokale Signatur</TextButton>
+        </Section>
+
+        <Section title="Globale Signaturen">
+          <div className="list">
+            {globalList.map(s => (
+              <div key={s.name} className="card">
+                <div className="row between vcenter">
+                  <div className="strong">{s.name}</div>
+                  <TextButton onClick={() => setActiveSig("global", s.name)}>Als aktiv setzen</TextButton>
+                </div>
+                <div className="sig-preview" dangerouslySetInnerHTML={{ __html: s.html || "" }} />
+              </div>
+            ))}
+          </div>
+          <TextButton onClick={addGlobal}>Neue globale Signatur</TextButton>
+        </Section>
       </div>
     </section>
   );
 }
-/* ==== END PART 4 ==== */
+
 
 
 
@@ -1388,211 +1269,132 @@ function ErrorList() {
 
 
 
-/* ==== PART 6 ==== */
-/** ============ KONTAKTE (upload + validation -> error_list) ============ */
-function Kontakte() {
-  const [file, setFile] = React.useState(null);
-  const [rows, setRows] = React.useState([]);
+/* =========================
+ * Part 6 — Kontakte / Upload
+ * ========================= */
+
+function Contacts() {
   const [mode, setMode] = React.useState("append");
-  const [info, setInfo] = React.useState("");
+  const [rows, setRows] = React.useState([]);
+  const [parseErr, setParseErr] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
 
-  // ----------- File Handling (CSV/PDF) -----------
   const onFile = async (e) => {
-    const f = e.target.files && e.target.files[0];
-    setFile(f || null);
-    if (!f) { setRows([]); setInfo(""); return; }
-
-    if (/\.(csv)$/i.test(f.name)) {
-      const parsed = await parseCSV(f);
-      setRows(parsed);
-      setInfo(`Gefunden: ${parsed.length} Zeilen (CSV)`);
-    } else if (/\.(pdf)$/i.test(f.name)) {
-      try {
-        // Guard, falls pdf.js/parsePDF nicht geladen sind
-        if (typeof parsePDF !== "function" || typeof pdfjsLib === "undefined") {
-          alert("PDF-Import ist derzeit nicht verfügbar (pdf.js nicht geladen). Bitte CSV verwenden.");
-          setRows([]);
-          setInfo("PDF-Import nicht verfügbar");
-          return;
-        }
-        const parsed = await parsePDF(f);
+    setParseErr("");
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const name = (file.name || "").toLowerCase();
+    try {
+      if (name.endsWith(".csv")) {
+        const text = await file.text();
+        const parsed = parseCsvContacts(text); // deine bestehende CSV-Parse-Funktion
         setRows(parsed);
-        setInfo(`Gefunden: ${parsed.length} Zeilen (PDF)`);
-      } catch (err) {
-        console.error(err);
-        setRows([]);
-        setInfo("PDF konnte nicht gelesen werden.");
+      } else if (name.endsWith(".pdf")) {
+        const arrbuf = await file.arrayBuffer();
+        const parsed = await parsePdfContacts(new Uint8Array(arrbuf)); // deine bestehende PDF-Parse-Funktion
+        setRows(parsed);
+      } else {
+        setParseErr("Nur CSV oder PDF unterstützen wir hier.");
       }
-    } else {
-      setRows([]);
-      setInfo("Bitte CSV oder PDF verwenden");
+    } catch (err) {
+      setParseErr(err.message || "Fehler beim Parsen");
     }
   };
 
-  // ----------- Upload: Plain POST + Batching (kein JSONP) -----------
-  async function postPlain(url, body) {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(body || {}),
-    });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status}: ${txt.slice(0,160)}`);
-    }
-    const txt = await res.text();
-    try { return JSON.parse(txt); } catch { return { text: txt }; }
-  }
-
-  async function postInBatches(url, rows, batchSize = 250) {
-    let ok = 0;
-    for (let i = 0; i < rows.length; i += batchSize) {
-      const chunk = rows.slice(i, i + batchSize);
-      const r = await postPlain(url, { rows: chunk, mode });
-      ok += Number(r.inserted || chunk.length);
-    }
-    return { inserted: ok, batches: Math.ceil(rows.length / batchSize) };
-  }
+  // Buttonleiste ohne „Vorbereiten…“ (liegt jetzt im Dashboard)
+  const Toolbar = () => (
+    <div className="row gap wrap">
+      <input type="file" accept=".csv,.pdf" onChange={onFile} />
+      <select value={mode} onChange={(e) => setMode(e.target.value)}>
+        <option value="append">Anhängen</option>
+        <option value="overwrite" disabled>Überschreiben (Server)</option>
+      </select>
+      <TextButton onClick={upload} disabled={!rows.length || busy}>{busy ? "Lädt…" : "Upload ins Sheet"}</TextButton>
+    </div>
+  );
 
   const upload = async () => {
     if (!rows.length) return alert("Keine gültigen Zeilen");
-
-    // Globale Blacklist/Bounces (Plain-POST statt JSONP)
-    let g = { blacklist: [], bounces: [] };
-    try { g = await postPlain(API.global.blacklist("", true), {}); } catch (e) {}
-
-    // Validierungsregeln
-    const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
-    const phoneOk    = (r) => !!(r.phone || r.mobile);
-
-    const errors = [];
-    const valid  = [];
-
-    for (const r of rows) {
-      let reason = "";
-      if (!requiredOk(r))                               reason = "MISSING_REQUIRED";
-      else if (!phoneOk(r))                             reason = "MISSING_PHONE_OR_MOBILE";
-      else if ((g.blacklist||[]).includes(r.email))     reason = "BLACKLIST";
-      else if ((g.bounces||[]).includes(r.email))       reason = "BOUNCE";
-
-      if (reason) {
-        errors.push({
-          email: r.email || "",
-          Anrede: r.Anrede || "",
-          firstName: r.firstName || "",
-          lastName: r.lastName || "",
-          company: r.company || "",
-          phone: r.phone || "",
-          mobile: r.mobile || "",
-          reason
-        });
-      } else {
-        valid.push(r);
-      }
-    }
-
+    setBusy(true);
     try {
-      // 1) Fehler in die globale Fehlerliste (gebatcht)
+      // Globale Blacklist/Bounces (Plain-POST, GET nicht nötig)
+      let g = { blacklist: [], bounces: [] };
+      try { g = await postPlain(API.global.blacklist("", true), {}); } catch (_) {}
+
+      // Validierung
+      const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
+      const phoneOk    = (r) => !!(r.phone || r.mobile);
+
+      const errors = [];
+      for (const r of rows) {
+        let reason = "";
+        if (!requiredOk(r))                               reason = "MISSING_REQUIRED";
+        else if (!phoneOk(r))                             reason = "MISSING_PHONE_OR_MOBILE";
+        else if ((g.blacklist||[]).includes(r.email))     reason = "BLACKLIST";
+        else if ((g.bounces||[]).includes(r.email))       reason = "BOUNCE";
+
+        if (reason) {
+          errors.push({
+            email: r.email || "",
+            Anrede: r.Anrede || "",
+            firstName: r.firstName || "",
+            lastName: r.lastName || "",
+            company: r.company || "",
+            phone: r.phone || "",
+            mobile: r.mobile || "",
+            reason
+          });
+        }
+      }
+
+      // 1) Fehler zusätzlich loggen
       if (errors.length) {
         await postInBatches(API.global.errorsAdd(), errors, 300);
       }
 
-      // 2) Gültige Kontakte ins lokale Upload-Tab (gebatcht)
-      if (valid.length) {
-        const r = await postInBatches(API.upload(), valid, 250);
-        alert(`Upload OK: ${r.inserted} (in ${r.batches} Batch(es))${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
-      } else {
-        alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste kopiert.`);
-      }
-      // rows unverändert lassen (Vorschau bleibt)
+      // 2) ALLE Zeilen ins Upload-Tab
+      const r = await postInBatches(API.upload(), rows, 250);
+
+      alert(`Upload OK: ${r.inserted || rows.length} (alle Zeilen)${errors.length ? ` | Zusätzlich Fehler geloggt: ${errors.length}` : ""}`);
     } catch (e) {
       console.error(e);
       alert(e.message || "Fehler beim Upload");
-    }
-  };
-
-  const prepare = async () => {
-    try {
-      await postPlain(API.prepareCampaign(), {});
-      alert("Vorbereitung ausgelöst");
-    } catch (e) {
-      alert(e.message || "Fehler bei Vorbereitung");
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
     <section className="grid gap">
-      <Section title="Kontaktliste importieren">
-        <div className="row gap wrap">
-          <input type="file" accept=".csv,.pdf" onChange={onFile} />
-          <select value={mode} onChange={(e) => setMode(e.target.value)}>
-            <option value="append">Anhängen</option>
-            <option value="overwrite" disabled>Überschreiben (Server)</option>
-          </select>
-          <TextButton onClick={upload} disabled={!rows.length}>Upload ins Sheet</TextButton>
-          <TextButton onClick={prepare}>Vorbereiten der neuen Kampagne</TextButton>
-        </div>
-
-        {info && <div className="muted">{info}</div>}
-
-        {rows.length > 0 && (
-          <div className="table-wrap">
-            <table className="table small">
-              <thead>
-                <tr>
-                  <th>email</th>
-                  <th>Anrede</th>
-                  <th>firstName</th>
-                  <th>lastName</th>
-                  <th>company</th>
-                  <th>position</th>
-                  <th>phone</th>
-                  <th>mobile</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.slice(0, 15).map((r, i) => (
-                  <tr key={i}>
-                    <td>{r.email}</td>
-                    <td>{r.Anrede || ""}</td>
-                    <td>{r.firstName}</td>
-                    <td>{r.lastName}</td>
-                    <td>{r.company}</td>
-                    <td>{r.position || ""}</td>
-                    <td>{r.phone || ""}</td>
-                    <td>{r.mobile || ""}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="muted">Vorschau: {rows.length} Zeilen (erste 15)</div>
+      <Section title="Kontakte hochladen" right={<Toolbar/>}>
+        {parseErr && <div className="error">{parseErr}</div>}
+        {rows.length ? (
+          <div className="table">
+            <div className="thead">
+              {["email","Anrede","firstName","lastName","company","phone","mobile"].map(h => <div key={h} className="th">{h}</div>)}
+            </div>
+            <div className="tbody">
+              {rows.slice(0,200).map((r,i) => (
+                <div key={i} className="tr">
+                  <div className="td">{r.email}</div>
+                  <div className="td">{r.Anrede}</div>
+                  <div className="td">{r.firstName}</div>
+                  <div className="td">{r.lastName}</div>
+                  <div className="td">{r.company}</div>
+                  <div className="td">{r.phone}</div>
+                  <div className="td">{r.mobile}</div>
+                </div>
+              ))}
+            </div>
           </div>
+        ) : (
+          <div className="muted">Noch keine Zeilen geladen.</div>
         )}
       </Section>
     </section>
   );
 }
 
-/* ==== MOUNT (Singleton-Root, verhindert doppeltes createRoot) ==== */
-(function () {
-  var rootEl = document.getElementById('root');
-  if (!rootEl) {
-    console.error('No #root element found. Add <div id="root"></div> to your HTML.');
-    return;
-  }
-  if (window.__APP_MOUNTED__) return;
-  window.__APP_MOUNTED__ = true;
-
-  try {
-    if (!window.__APP_ROOT__) {
-      window.__APP_ROOT__ = ReactDOM.createRoot(rootEl);
-    }
-    window.__APP_ROOT__.render(React.createElement(App));
-    console.log('[app] mounted');
-  } catch (e) {
-    console.error('Mount error:', e);
-  }
-})();
 /* ==== END PART 6 ==== */
 
 
