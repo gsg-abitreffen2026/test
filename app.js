@@ -67,83 +67,57 @@ errorsVisible: () => `${API_BASE}?path=api/global/error_list/visible`,
 },
 };
 
-/* --- HTTP-Layer (POST-only Reads, kein Preflight, Retry/Backoff) --- */
+/* --- HTTP-Layer (POST-only Reads/Writes, kein Preflight, mit Retry) --- */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchWithRetry(url, options = {}, tries = 5) {
+async function fetchWithRetry(url, options = {}, tries = 4) {
   let lastErr;
   for (let i = 0; i < tries; i++) {
     try {
       const res = await fetch(url, options);
-      // Retry bei 429/503
       if (res.status === 429 || res.status === 503) {
-        const wait = 200 * Math.pow(2, i) + Math.floor(Math.random() * 120);
-        await sleep(wait);
+        await sleep(250 * (i + 1));
         continue;
       }
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}: ${url} ${txt.slice(0, 160)}`);
-/* --- HTTP-Layer: JSONP (umgeht CORS) + Method-Override für "POST" --- */
-function jsonp(url) {
-  return new Promise((resolve, reject) => {
-    const cb = "__cb" + Math.random().toString(36).slice(2);
-    const sep = url.includes("?") ? "&" : "?";
-    const src = `${url}${sep}callback=${cb}`;
-    const s = document.createElement("script");
-    let done = false;
-
-    window[cb] = (data) => {
-      if (done) return;
-      done = true;
-      try { resolve(data); } finally {
-        delete window[cb];
-        s.remove();
-}
+        throw new Error(`HTTP ${res.status}: ${txt.slice(0, 200)}`);
+      }
       const txt = await res.text();
-      try { return JSON.parse(txt); } catch { return { text: txt }; }
-    } catch (err) {
-      lastErr = err;
+      try {
+        return JSON.parse(txt);
+      } catch {
+        return { text: txt };
+      }
+    } catch (e) {
+      lastErr = e;
       await sleep(150 * (i + 1));
     }
   }
-  throw lastErr || new Error(`Request failed: ${url}`);
-    };
-    s.onerror = () => {
-      if (done) return;
-      done = true;
-      delete window[cb];
-      s.remove();
-      reject(new Error("JSONP network error"));
-    };
-    s.src = src;
-    document.head.appendChild(s);
-  });
+  throw lastErr || new Error("Request failed");
 }
 
-// Reads → POST ohne Body, damit kein CORS-Preflight entsteht
-// Reads → GET via JSONP
+// Reads → POST ohne Body (kein Preflight)
 async function httpGet(url) {
   return fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "",
+    body: "", // wichtig: leerer Body
   });
-  return jsonp(url);
 }
 
-// Writes → "POST" via Method-Override + JSONP
+// Writes → POST mit Body (text/plain)
 async function httpPost(url, body) {
   return fetchWithRetry(url, {
     method: "POST",
     headers: { "Content-Type": "text/plain;charset=utf-8" },
     body: JSON.stringify(body || {}),
   });
-  const payload = encodeURIComponent(JSON.stringify(body || {}));
-  const sep = url.includes("?") ? "&" : "?";
-  const urlWith = `${url}${sep}method=POST&body=${payload}`;
-  return jsonp(urlWith);
 }
+
+// Dummy-Funktion für Legacy-Stellen
+function ensureOk() {}
+
 
 /** ============ helpers ============ */
 function cn(...xs) { return xs.filter(Boolean).join(" "); }
