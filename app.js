@@ -1423,6 +1423,62 @@ function Contacts() {
 
 /* ==== END PART 6 ==== */
 
+/* ==== BOOTSTRAP: App + globaler Export ==== */
+
+// Kleines SPA-Shell mit Tabs
+function App() {
+  const { useState, Fragment } = React;
+
+  const [tab, setTab] = useState("dashboard");
+
+  const Tabs = [
+    { id: "dashboard", label: "Dashboard", view: <Dashboard /> },
+    { id: "contacts",  label: "Kontakte",  view: <Contacts /> },
+    { id: "templates", label: "Templates", view: <Templates /> },
+    { id: "signatures",label: "Signaturen",view: <Signatures /> },
+    { id: "blacklist", label: "Blacklist", view: <Blacklist /> },
+    { id: "errors",    label: "Fehlerliste", view: <ErrorList /> },
+  ];
+
+  return (
+    <div className="container">
+      <header className="topbar">
+        <h1>avus smart-cap</h1>
+        <nav className="tabs row gap wrap">
+          {Tabs.map(t => (
+            <button
+              key={t.id}
+              className={"btn" + (tab === t.id ? " primary" : "")}
+              onClick={() => setTab(t.id)}
+              type="button"
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+
+      <main className="content">
+        {Tabs.find(t => t.id === tab)?.view || <div className="error">Unbekannter Tab</div>}
+      </main>
+    </div>
+  );
+}
+
+// Wichtig: global exportieren, damit index.html dich findet
+window.App = App;
+
+// Optionaler Auto-Mount (falls index.html kein mount-Fallback hat)
+if (document.getElementById("app") && window.ReactDOM && !window.__AUTO_MOUNT_DONE__) {
+  window.__AUTO_MOUNT_DONE__ = true;
+  try {
+    const root = ReactDOM.createRoot(document.getElementById("app"));
+    root.render(<App />);
+    console.log("[boot] App automatisch gemounted.");
+  } catch (e) {
+    console.warn("[boot] Auto-Mount nicht möglich:", e);
+  }
+}
 
 
                                                         
