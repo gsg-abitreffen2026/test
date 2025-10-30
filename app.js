@@ -1396,6 +1396,7 @@ function Kontakte() {
   const [mode, setMode] = React.useState("append");
   const [info, setInfo] = React.useState("");
 
+  // ----------- File Handling (CSV/PDF) -----------
   const onFile = async (e) => {
     const f = e.target.files && e.target.files[0];
     setFile(f || null);
@@ -1428,26 +1429,51 @@ function Kontakte() {
     }
   };
 
-  // Pflichtfelder + Telefonregel
-  const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
-  const phoneOk    = (r) => !!(r.phone || r.mobile);
+  // ----------- Upload: Plain POST + Batching (kein JSONP) -----------
+  async function postPlain(url, body) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify(body || {}),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(`HTTP ${res.status}: ${txt.slice(0,160)}`);
+    }
+    const txt = await res.text();
+    try { return JSON.parse(txt); } catch { return { text: txt }; }
+  }
+
+  async function postInBatches(url, rows, batchSize = 250) {
+    let ok = 0;
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const chunk = rows.slice(i, i + batchSize);
+      const r = await postPlain(url, { rows: chunk, mode });
+      ok += Number(r.inserted || chunk.length);
+    }
+    return { inserted: ok, batches: Math.ceil(rows.length / batchSize) };
+  }
 
   const upload = async () => {
     if (!rows.length) return alert("Keine gültigen Zeilen");
 
-    // Globale Blacklist/Bounces
+    // Globale Blacklist/Bounces (Plain-POST statt JSONP)
     let g = { blacklist: [], bounces: [] };
-    try { g = await httpGet(API.global.blacklist("", true)); } catch (e) {}
+    try { g = await postPlain(API.global.blacklist("", true), {}); } catch (e) {}
+
+    // Validierungsregeln
+    const requiredOk = (r) => !!(r.email && r.Anrede && r.firstName && r.lastName && r.company);
+    const phoneOk    = (r) => !!(r.phone || r.mobile);
 
     const errors = [];
     const valid  = [];
 
     for (const r of rows) {
       let reason = "";
-      if (!requiredOk(r))                              reason = "MISSING_REQUIRED";
-      else if (!phoneOk(r))                            reason = "MISSING_PHONE_OR_MOBILE";
-      else if ((g.blacklist||[]).includes(r.email))    reason = "BLACKLIST";
-      else if ((g.bounces||[]).includes(r.email))      reason = "BOUNCE";
+      if (!requiredOk(r))                               reason = "MISSING_REQUIRED";
+      else if (!phoneOk(r))                             reason = "MISSING_PHONE_OR_MOBILE";
+      else if ((g.blacklist||[]).includes(r.email))     reason = "BLACKLIST";
+      else if ((g.bounces||[]).includes(r.email))       reason = "BOUNCE";
 
       if (reason) {
         errors.push({
@@ -1466,27 +1492,28 @@ function Kontakte() {
     }
 
     try {
+      // 1) Fehler in die globale Fehlerliste (gebatcht)
       if (errors.length) {
-        const resErr = await httpPost(API.global.errorsAdd(), { rows: errors });
-        ensureOk(resErr, 'Fehlerliste anlegen');
+        await postInBatches(API.global.errorsAdd(), errors, 300);
       }
+
+      // 2) Gültige Kontakte ins lokale Upload-Tab (gebatcht)
       if (valid.length) {
-        const resUp = await httpPost(API.upload(), { rows: valid, mode });
-        ensureOk(resUp, 'Upload');
-        alert(`Upload gesendet. OK: ${valid.length}${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
+        const r = await postInBatches(API.upload(), valid, 250);
+        alert(`Upload OK: ${r.inserted} (in ${r.batches} Batch(es))${errors.length ? ` | Fehler kopiert: ${errors.length}` : ""}`);
       } else {
         alert(`Keine gültigen Zeilen. ${errors.length} Fehler wurden in die Fehlerliste kopiert.`);
       }
       // rows unverändert lassen (Vorschau bleibt)
     } catch (e) {
+      console.error(e);
       alert(e.message || "Fehler beim Upload");
     }
   };
 
   const prepare = async () => {
     try {
-      const res = await httpPost(API.prepareCampaign(), {});
-      ensureOk(res, 'Vorbereitung');
+      await postPlain(API.prepareCampaign(), {});
       alert("Vorbereitung ausgelöst");
     } catch (e) {
       alert(e.message || "Fehler bei Vorbereitung");
@@ -1567,6 +1594,7 @@ function Kontakte() {
   }
 })();
 /* ==== END PART 6 ==== */
+
 
 
                                                         
