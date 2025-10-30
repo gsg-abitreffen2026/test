@@ -1,6 +1,35 @@
 /* ==== PART 1 ==== */
 /* ===== avus smart-cap Dashboard – Core, API, Helpers, UI Primitives ===== */
 
+/** --- Boot-Fixes: Babel-Warnung filtern + Fallback-Favicon injizieren --- */
+(() => {
+  // 1) Spezifische Babel-Standalone-Warnung rausfiltern (nur diese eine Message)
+  try {
+    const _origWarn = console.warn;
+    console.warn = function (...args) {
+      if (
+        args &&
+        typeof args[0] === "string" &&
+        args[0].includes("in-browser Babel transformer")
+      ) {
+        // Schweigen – wir prebuilden später sauber.
+        return;
+      }
+      return _origWarn.apply(this, args);
+    };
+  } catch {}
+
+  // 2) Fallback-Favicon, um 404 zu vermeiden (leerer Data-URI)
+  try {
+    if (!document.querySelector('link[rel="icon"]')) {
+      const link = document.createElement("link");
+      link.rel = "icon";
+      link.href = "data:;base64,=";
+      document.head.appendChild(link);
+    }
+  } catch {}
+})();
+
 /** React aliases */
 const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 
@@ -259,13 +288,10 @@ async function parsePDF(file) {
 
 // Aliases für Part 6
 const parseCsvContacts = (text) => {
-  // Minimaler Parser für CSV-String (für File.text() hatten wir oben parseCSV(file))
-  // Hier nutzen wir denselben Logikpfad wie parseCSV, nur für bereits vorliegenden Text:
   const fakeFile = { text: async () => text };
   return parseCSV(fakeFile);
 };
 const parsePdfContacts = async (uint8) => {
-  // pdfjs braucht ArrayBuffer; hier bauen wir ein Blob-File-ähnliches Objekt:
   const blob = new Blob([uint8], { type: "application/pdf" });
   const fileLike = { arrayBuffer: async () => blob.arrayBuffer() };
   return parsePDF(fileLike);
