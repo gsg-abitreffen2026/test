@@ -1,15 +1,17 @@
+<!doctype html>
+<html lang="de">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>avus smart-cap Dashboard</title>
 
-  <!-- 1) Favicon-Fix: verhindert 404 auf /favicon.ico -->
-  <!-- Variante A: Data-URI (sofort, keine Datei nötig) -->
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23003360'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='42' fill='white'%3EA%3C/text%3E%3C/svg%3E" />
-  <!-- Variante B (optional, wenn du eine Datei hast):
-  <link rel="icon" href="./assets/favicon.png" type="image/png" />
-  -->
+  <!-- Favicon-Fix: verhindert 404 auf /favicon.ico -->
+  <link
+    rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23003360'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='42' fill='white'%3EA%3C/text%3E%3C/svg%3E"
+  />
 
-  <!-- 2) Babel-Warnung filtern: MUSS vor babel.min.js stehen -->
+  <!-- Babel-Warnung gezielt filtern (muss VOR babel.min.js stehen) -->
   <script>
     (function () {
       try {
@@ -23,13 +25,49 @@
     })();
   </script>
 
-  <!-- erst DANACH deine Frameworks laden -->
+  <!-- Styles -->
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <noscript>Bitte JavaScript aktivieren.</noscript>
+
+  <!-- Optional: Topbar/Container können auch rein per React gerendert werden -->
+  <div id="app"></div>
+
+  <!-- React & ReactDOM -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
 
-  <!-- Babel nur falls du noch type="text/babel" verwendest -->
+  <!-- PDF.js (für PDF-Parsing in Part 6) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
+  <script>
+    // PDF.js Worker setzen (notwendig für stabile Extraktion)
+    try {
+      pdfjsLib.GlobalWorkerOptions.workerSrc =
+        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    } catch (e) {}
+  </script>
+
+  <!-- Babel nur nötig, wenn app.js JSX enthält -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <!-- deine Styles -->
-  <link rel="stylesheet" href="./style.css" />
-</head>
+  <!-- Deine App: falls JSX vorhanden, mit type="text/babel" laden -->
+  <script type="text/babel" src="./app.js"></script>
+
+  <!-- Mounten (falls nicht bereits in app.js erledigt) -->
+  <script type="text/babel">
+    // Falls du bereits in app.js ReactDOM.render(...) aufrufst, diesen Block entfernen.
+    if (!document.getElementById("___appMounted")) {
+      const rootEl = document.getElementById("app");
+      if (rootEl && window.React && window.ReactDOM) {
+        // Erwartet, dass app.js ein <App/> exportfrei in globalem Scope bereitstellt,
+        // ansonsten diesen Block in app.js integrieren.
+        const { StrictMode, createElement } = React;
+        const root = ReactDOM.createRoot(rootEl);
+        // Falls deine app.js bereits alles rendert, kommentiere die nächste Zeile aus:
+        // root.render( createElement(StrictMode, null, createElement(App)) );
+      }
+    }
+  </script>
+</body>
+</html>
