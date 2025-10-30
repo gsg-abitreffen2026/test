@@ -1,99 +1,37 @@
 <!doctype html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>avus smart-cap Dashboard</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Email-Akquise Dashboard</title>
 
-  <!-- Favicon, verhindert 404 -->
-  <link
-    rel="icon"
-    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Crect width='64' height='64' fill='%23003360'/%3E%3Ctext x='50%25' y='55%25' dominant-baseline='middle' text-anchor='middle' font-size='42' fill='white'%3EA%3C/text%3E%3C/svg%3E"
-  />
+  <!-- Dein Stylesheet -->
+<link rel="stylesheet" href="styles.css" />
 
-  <!-- Babel-Warnung gezielt filtern -->
-  <script>
-    (function () {
-      try {
-        var _warn = console.warn;
-        console.warn = function () {
-          var s = arguments && String(arguments[0] || "");
-          if (s.indexOf("in-browser Babel transformer") !== -1) return;
-          return _warn.apply(console, arguments);
-        };
-      } catch(e){}
-    })();
-  </script>
+<!-- React UMD -->
+<script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
 
-  <!-- ===== CSS Loader: exakt 1 URL (kein 404-Spam) ===== -->
-  <script>
-    (function () {
-      // Falls deine style.css unter /test/style.css liegt, ändere die nächste Zeile darauf!
-      const href = location.origin + "/style.css"; // <- ggf. auf location.origin + "/test/style.css" ändern
-      const l = document.createElement("link");
-      l.rel = "stylesheet";
-      l.href = href + "?v=" + Date.now();
-      l.onload = () => console.log("[css] loaded:", l.href);
-      l.onerror = () => console.error("[css] failed:", l.href);
-      document.head.appendChild(l);
-    })();
-  </script>
-</head>
+  <!-- pdf.js (nur nötig, wenn PDF-Upload genutzt wird) -->
+  <!-- pdf.js (optional, für PDF-Upload) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
+<script>
+    // Worker setzen, damit parsePDF zuverlässig läuft
+if (window.pdfjsLib) {
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+"https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+}
+</script>
 
-<body>
-  <noscript>Bitte JavaScript aktivieren.</noscript>
-  <div id="app"></div>
-
-  <!-- Globaler Error-Logger, damit „weißer Screen“ nicht stumm bleibt -->
-  <script>
-    window.addEventListener("error", e => {
-      console.error("[window.onerror]", e.message, e.filename + ":" + e.lineno + ":" + e.colno);
-    });
-    window.addEventListener("unhandledrejection", e => {
-      console.error("[unhandledrejection]", e.reason);
-    });
-  </script>
-
-  <!-- React & ReactDOM -->
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-
-  <!-- PDF.js (für PDF-Parsing in Part 6) -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" crossorigin></script>
-  <script>
-    try {
-      pdfjsLib.GlobalWorkerOptions.workerSrc =
-        "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    } catch(e){}
-  </script>
-
-  <!-- Babel-Standalone (für JSX in externem app.js) -->
+  <!-- Babel Standalone für JSX im Browser -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
 
-  <!-- WICHTIG: data-presets="react" damit JSX in app.js kompiliert wird -->
-  <script
-    type="text/babel"
-    data-presets="react"
-    src="./app.js">
-  </script>
-
-  <!-- Mount-Fallback: rendert App(), wenn vorhanden – sonst klare Fehlermeldung -->
-  <script type="text/babel" data-presets="react">
-    (function mount() {
-      const rootEl = document.getElementById("app");
-      if (!rootEl || !window.React || !window.ReactDOM) return;
-
-      if (typeof window.App === "function") {
-        const root = ReactDOM.createRoot(rootEl);
-        root.render(<App />);
-        console.log("[mount] App() gerendert.");
-      } else if (typeof window.renderApp === "function") {
-        window.renderApp();
-        console.log("[mount] renderApp() aufgerufen.");
-      } else {
-        console.error("[mount] Keine App gefunden. Definiere entweder global window.App oder window.renderApp in app.js.");
-      }
-    })();
-  </script>
+  <!-- Deine zusammengefügte App -->
+  <script src="app.js?v=20251023c"></script>
+  <!-- Deine App mit JSX: unbedingt type="text/babel" -->
+  <script type="text/babel" data-presets="react,env" src="app.js?v=20251023d"></script>
 </body>
 </html>
