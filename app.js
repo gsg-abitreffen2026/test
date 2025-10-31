@@ -7,7 +7,7 @@ const { useState, useEffect, useMemo, useCallback, useRef, Fragment } = React;
 /** =====================
  *  CONFIG / API PATHS
  *  ===================== */
-const API_BASE = "https://script.google.com/macros/s/AKfycbz1KyuZJlXy9xpjLipMG1ppat2bQDjH361Rv_P8TIGg5Xcjha1HPGvVGRV1xujD049DOw/exec";
+const API_BASE = "/api"; // wenn Backend unter gleicher Domain läuft
 
 /* --- API (ohne führenden Slash in path) --- */
 const API = {
