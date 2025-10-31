@@ -97,14 +97,14 @@ async function fetchWithRetry(url, options = {}, tries = 4) {
   throw lastErr || new Error("Request failed");
 }
 
-// Reads → POST ohne Body (kein Preflight)
+// Reads → GET (kein Preflight, kompatibel mit doGet-Router)
 async function httpGet(url) {
   return fetchWithRetry(url, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: "", // wichtig: leerer Body
+    method: "GET",
+    // keine Sonder-Header setzen → kein Preflight
   });
 }
+
 
 // Writes → POST mit Body (text/plain)
 async function httpPost(url, body) {
