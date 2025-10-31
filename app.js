@@ -20,14 +20,12 @@ stats: () => `${API_BASE}?path=api/stats`,
 templates: () => `${API_BASE}?path=api/templates`,
 saveTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/" + sequenceId)}`,
 setActiveTemplate: () => `${API_BASE}?path=api/templates/active`,
-  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`,
-  deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`, // (Server: optional / fallback)
+   deleteTemplate: (sequenceId) => `${API_BASE}?path=${encodeURIComponent("api/templates/delete/" + sequenceId)}`, // (Server: optional / fallback)
 
 signatures: () => `${API_BASE}?path=api/signatures`,
 saveSignature: () => `${API_BASE}?path=api/signatures/save`,
 setActiveSignature: () => `${API_BASE}?path=api/signatures/active`,
 signaturesStandard: () => `${API_BASE}?path=api/signatures/standard`,
-  deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`,
   deleteSignature: (name) => `${API_BASE}?path=${encodeURIComponent("api/signatures/delete/" + name)}`, // (Server: optional / fallback)
 
 blacklistLocal: (q, includeBounces) =>
